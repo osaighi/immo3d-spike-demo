@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<meta name="theme-color" content="#000000" />
+<title>Immo3D — spike viewer</title>
+<style>
+  html, body { margin:0; height:100%; background:#000; color:#eee;
+               font-family:-apple-system,system-ui,sans-serif; overflow:hidden;
+               overscroll-behavior:none; -webkit-touch-callout:none;
+               -webkit-user-select:none }
+  #stage { position:fixed; inset:0 }
+  #stage canvas { width:100%; height:100%; display:block; touch-action:none }
+  #hud { position:fixed; top:max(12px,env(safe-area-inset-top)); left:12px;
+         padding:8px 12px; background:rgba(0,0,0,.55); border-radius:8px;
+         font-size:13px; backdrop-filter:blur(8px); pointer-events:none }
+  #help { position:fixed; bottom:max(12px,env(safe-area-inset-bottom)); left:12px;
+          right:12px; padding:8px 12px; background:rgba(0,0,0,.45);
+          border-radius:8px; font-size:11px; backdrop-filter:blur(8px);
+          pointer-events:none; text-align:center }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="hud">Loading…</div>
+<div id="help">1 finger drag = orbit · 2 fingers = pan · pinch = zoom</div>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js",
+  "gaussian-splats-3d": "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.7/build/gaussian-splats-3d.module.js"
+}}
+</script>
+<script type="module">
+import * as GS from 'gaussian-splats-3d';
+const hud = document.getElementById('hud');
+const url = new URLSearchParams(location.search).get('url') || './spike.ksplat';
+hud.textContent = 'Loading ' + url.split('/').pop() + '…';
+const viewer = new GS.Viewer({
+  rootElement: document.getElementById('stage'),
+  cameraUp: [0, -1, 0],
+  initialCameraPosition: [0, 0, -3],
+  initialCameraLookAt: [0, 0, 0],
+  sharedMemoryForWorkers: false,
+});
+viewer.addSplatScene(url, { format: GS.SceneFormat.KSplat, progressiveLoad: true })
+  .then(() => { hud.textContent = 'Loaded · drag to navigate'; viewer.start(); })
+  .catch(e => { hud.textContent = 'Load failed: ' + e.message; console.error(e); });
+</script>
+</body>
+</html>
