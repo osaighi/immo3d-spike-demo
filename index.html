@@ -24,7 +24,7 @@
 <body>
 <div id="stage"></div>
 <div id="hud">Loading…</div>
-<div id="help">1 finger drag = orbit · 2 fingers = pan · pinch = zoom</div>
+<div id="help">1 finger drag = orbit · 2 fingers = pan · pinch = zoom · <a href="./video.html" style="color:#9cf">video pipeline →</a></div>
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js",
@@ -44,7 +44,7 @@ const viewer = new GS.Viewer({
   sharedMemoryForWorkers: false,
 });
 viewer.addSplatScene(url, { format: GS.SceneFormat.KSplat, progressiveLoad: true })
-  .then(() => { hud.textContent = 'Loaded · drag to navigate'; viewer.start(); })
+  .then(() => { hud.textContent = 'Photos pipeline · 12 min · $0.14 · 10.8 MB'; viewer.start(); })
   .catch(e => { hud.textContent = 'Load failed: ' + e.message; console.error(e); });
 </script>
 </body>
