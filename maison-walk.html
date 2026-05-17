@@ -82,11 +82,11 @@ Promise.all([
   // Orbit camera centered on the actual interior, not the polluted AABB.
   orbitCam = new BABYLON.ArcRotateCamera('orbit',
     Math.PI / 4, Math.PI / 3,
-    realRadius * 0.6, realCenter, scene);
+    realRadius * 1.5, realCenter, scene);
   orbitCam.minZ = 0.01;
   orbitCam.maxZ = 1000;
-  orbitCam.lowerRadiusLimit = realRadius * 0.05;
-  orbitCam.upperRadiusLimit = realRadius * 2.5;
+  orbitCam.lowerRadiusLimit = realRadius * 0.3;
+  orbitCam.upperRadiusLimit = realRadius * 5;
   orbitCam.wheelDeltaPercentage = 0.02;
   orbitCam.pinchDeltaPercentage = 0.005;
   scene.activeCamera = orbitCam;
