@@ -76,7 +76,7 @@ let sceneRadius = 1;
 let entryPoint = BABYLON.Vector3.Zero();
 
 hud.textContent = 'Loading…';
-const url = new URLSearchParams(location.search).get('url') || './maison-clean.ply?v='+Date.now();
+const url = new URLSearchParams(location.search).get('url') || './maison-full.ply';
 const splat = new BABYLON.GaussianSplattingMesh('splat', null, scene);
 splat.loadFileAsync(url).then(() => {
   const bb = splat.getBoundingInfo().boundingBox;
