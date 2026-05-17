@@ -11,49 +11,42 @@
                overscroll-behavior:none }
   #stage { position:fixed; inset:0 }
   #stage canvas { width:100%; height:100%; display:block; touch-action:none }
-  /* HUD */
   #hud { position:fixed; top:max(12px,env(safe-area-inset-top)); left:12px;
          padding:8px 12px; background:rgba(0,0,0,.55); border-radius:8px;
          font-size:12px; backdrop-filter:blur(8px); pointer-events:none;
          max-width: 60vw }
-  /* Mode toggle */
   #modes { position:fixed; top:max(12px,env(safe-area-inset-top)); right:12px;
            display:flex; gap:4px; padding:4px; background:rgba(0,0,0,.55);
-           border-radius:10px; backdrop-filter:blur(8px) }
+           border-radius:10px; backdrop-filter:blur(8px); z-index:20 }
   #modes button { background:transparent; border:0; color:#bbb;
                   padding:6px 12px; border-radius:7px; font-size:12px;
                   font-family:inherit; cursor:pointer }
   #modes button.on { background:#1f4fff; color:#fff }
-  /* Reset */
-  #reset { position:fixed; bottom:max(80px,calc(env(safe-area-inset-bottom)+80px));
-           right:12px; padding:10px 14px; background:rgba(0,0,0,.7); color:#fff;
+  #reset { position:fixed; bottom:max(20px,env(safe-area-inset-bottom));
+           right:20px; padding:10px 14px; background:rgba(0,0,0,.7); color:#fff;
            border:0; border-radius:10px; font-size:13px; font-family:inherit;
-           backdrop-filter:blur(8px); cursor:pointer }
-  /* Joystick (touch only) */
+           backdrop-filter:blur(8px); cursor:pointer; z-index:20 }
+  /* Move joystick — touch only, walk mode only */
   #stick { position:fixed; bottom:max(20px,env(safe-area-inset-bottom));
            left:20px; width:120px; height:120px; border-radius:60px;
            background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.2);
-           backdrop-filter:blur(8px); display:none; touch-action:none }
+           backdrop-filter:blur(8px); display:none; touch-action:none; z-index:20 }
   #stickKnob { position:absolute; top:35px; left:35px; width:50px; height:50px;
                border-radius:25px; background:rgba(31,79,255,.85);
                box-shadow:0 4px 12px rgba(0,0,0,.4) }
+  #stickLabel { position:absolute; bottom:-22px; left:0; right:0; text-align:center;
+                font-size:11px; color:rgba(255,255,255,.6) }
   body.walk #stick { display:block }
-  /* Look pad bottom-right for walk mode */
-  #lookPad { position:fixed; bottom:max(20px,env(safe-area-inset-bottom));
-             right:20px; width:120px; height:120px; border-radius:60px;
-             background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.2);
-             backdrop-filter:blur(8px); display:none; touch-action:none;
-             color:#888; font-size:11px; text-align:center; line-height:120px }
-  body.walk #lookPad { display:block }
   body.walk #reset { bottom:max(160px,calc(env(safe-area-inset-bottom)+160px)) }
   /* Hint banner */
   #hint { position:fixed; bottom:max(20px,env(safe-area-inset-bottom));
           left:50%; transform:translateX(-50%); padding:8px 14px;
           background:rgba(0,0,0,.7); color:#fff; border-radius:8px;
           font-size:12px; backdrop-filter:blur(8px); pointer-events:none;
-          transition: opacity 0.5s; white-space:nowrap; max-width:90vw }
+          transition: opacity 0.5s; max-width:90vw; z-index:15 }
   #hint.fade { opacity:0 }
-  body.walk #hint { display:none }
+  body.walk #hint { bottom:max(160px,calc(env(safe-area-inset-bottom)+160px));
+                    left:auto; right:20px; transform:none }
 </style>
 </head>
 <body>
@@ -64,9 +57,8 @@
   <button id="mWalk">Marcher</button>
 </div>
 <button id="reset">⟲ Reset</button>
-<div id="stick"><div id="stickKnob"></div></div>
-<div id="lookPad">regarder</div>
-<div id="hint">1 doigt = orbit · 2 doigts = pan · pinch = zoom</div>
+<div id="stick"><div id="stickKnob"></div><div id="stickLabel">bouger</div></div>
+<div id="hint">1 doigt = tourner · 2 doigts = pan · pinch = zoom</div>
 
 <script type="importmap">
 { "imports": {
@@ -100,18 +92,15 @@ viewer.addSplatScene('./maison-hq.ksplat', {
   format: GS.SceneFormat.KSplat,
   progressiveLoad: true,
 }).then(() => {
-  // Compute scene bounds from the loaded splats.
   scene = viewer.getSplatScene(0);
   const box = new THREE.Box3();
   if (scene && scene.geometry && scene.geometry.boundingBox) {
     box.copy(scene.geometry.boundingBox);
   } else {
-    // Fallback: query the renderer
     box.set(new THREE.Vector3(-3, -3, -3), new THREE.Vector3(3, 3, 3));
   }
   sceneCenter.copy(box.getCenter(new THREE.Vector3()));
   sceneRadius = box.getSize(new THREE.Vector3()).length() * 0.5;
-  // Place camera outside the scene looking at center
   initialLookAt.copy(sceneCenter);
   initialCamPos.copy(sceneCenter).add(new THREE.Vector3(0, -sceneRadius * 0.3, sceneRadius * 1.5));
   resetCamera();
@@ -134,7 +123,7 @@ function resetCamera() {
 
 document.getElementById('reset').onclick = resetCamera;
 
-// ---- Mode toggling ----
+// ---- Mode toggle ----
 const orbitBtn = document.getElementById('mOrbit');
 const walkBtn  = document.getElementById('mWalk');
 let mode = 'orbit';
@@ -145,93 +134,141 @@ function setMode(m) {
   orbitBtn.classList.toggle('on', m === 'orbit');
   walkBtn.classList.toggle('on', m === 'walk');
   if (viewer.controls) viewer.controls.enabled = (m === 'orbit');
+  // Reset hint visibility when changing mode
+  hint.classList.remove('fade');
+  hint.textContent = m === 'walk'
+    ? 'joystick = bouger · doigt sur l\'écran = regarder'
+    : '1 doigt = tourner · 2 doigts = pan · pinch = zoom';
+  setTimeout(() => hint.classList.add('fade'), 5000);
 }
 orbitBtn.onclick = () => setMode('orbit');
 walkBtn.onclick  = () => setMode('walk');
 
-// ---- Walk mode: WASD + joystick ----
+// ---- Walk-mode controls ----
 const move = { fwd: 0, right: 0 };
 const look = { yaw: 0, pitch: 0 };
 
+// Keyboard (desktop)
 addEventListener('keydown', e => {
   if (mode !== 'walk') return;
-  if (e.key === 'z' || e.key === 'w' || e.key === 'ArrowUp')    move.fwd = 1;
-  if (e.key === 's' || e.key === 'ArrowDown')                   move.fwd = -1;
-  if (e.key === 'q' || e.key === 'a' || e.key === 'ArrowLeft')  move.right = -1;
-  if (e.key === 'd' || e.key === 'ArrowRight')                  move.right = 1;
+  if (['z','w','ArrowUp'].includes(e.key))    move.fwd = 1;
+  if (['s','ArrowDown'].includes(e.key))      move.fwd = -1;
+  if (['q','a','ArrowLeft'].includes(e.key))  move.right = -1;
+  if (['d','ArrowRight'].includes(e.key))     move.right = 1;
 });
 addEventListener('keyup', e => {
-  if (e.key === 'z' || e.key === 'w' || e.key === 's' || e.key === 'ArrowUp' || e.key === 'ArrowDown') move.fwd = 0;
-  if (e.key === 'q' || e.key === 'a' || e.key === 'd' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') move.right = 0;
+  if (['z','w','s','ArrowUp','ArrowDown'].includes(e.key)) move.fwd = 0;
+  if (['q','a','d','ArrowLeft','ArrowRight'].includes(e.key)) move.right = 0;
 });
 
-// Touch joystick (left side = move)
-function setupPad(el, onChange) {
-  let active = null;
-  const rect = () => el.getBoundingClientRect();
-  el.addEventListener('touchstart', e => {
-    active = e.changedTouches[0].identifier;
-    e.preventDefault();
-  }, { passive: false });
-  el.addEventListener('touchmove', e => {
-    for (const t of e.changedTouches) {
-      if (t.identifier !== active) continue;
-      const r = rect();
-      const cx = r.left + r.width/2, cy = r.top + r.height/2;
-      const dx = (t.clientX - cx) / (r.width/2);
-      const dy = (t.clientY - cy) / (r.height/2);
-      const len = Math.min(1, Math.hypot(dx, dy));
-      const nx = len > 0 ? dx / Math.hypot(dx,dy) * len : 0;
-      const ny = len > 0 ? dy / Math.hypot(dx,dy) * len : 0;
-      onChange(nx, ny);
-    }
-    e.preventDefault();
-  }, { passive: false });
-  const end = e => { for (const t of e.changedTouches) if (t.identifier === active) { active = null; onChange(0,0); } };
-  el.addEventListener('touchend', end);
-  el.addEventListener('touchcancel', end);
-}
-
+// Touch joystick (left) for movement
 const stick = document.getElementById('stick');
 const knob = document.getElementById('stickKnob');
-setupPad(stick, (x, y) => {
-  knob.style.transform = `translate(${x*35}px, ${y*35}px)`;
-  move.right = x;
-  move.fwd = -y;
-});
-setupPad(document.getElementById('lookPad'), (x, y) => {
-  look.yaw = x;
-  look.pitch = -y;
-});
+let stickTouch = null;
+stick.addEventListener('touchstart', e => {
+  stickTouch = e.changedTouches[0].identifier;
+  e.preventDefault();
+}, { passive: false });
+stick.addEventListener('touchmove', e => {
+  for (const t of e.changedTouches) {
+    if (t.identifier !== stickTouch) continue;
+    const r = stick.getBoundingClientRect();
+    const cx = r.left + r.width/2, cy = r.top + r.height/2;
+    let dx = (t.clientX - cx) / (r.width/2);
+    let dy = (t.clientY - cy) / (r.height/2);
+    const len = Math.hypot(dx, dy);
+    if (len > 1) { dx /= len; dy /= len; }
+    knob.style.transform = `translate(${dx*35}px, ${dy*35}px)`;
+    move.right = dx;
+    move.fwd = -dy;
+  }
+  e.preventDefault();
+}, { passive: false });
+function stickEnd(e) {
+  for (const t of e.changedTouches) {
+    if (t.identifier === stickTouch) {
+      stickTouch = null;
+      knob.style.transform = '';
+      move.fwd = 0; move.right = 0;
+    }
+  }
+}
+stick.addEventListener('touchend', stickEnd);
+stick.addEventListener('touchcancel', stickEnd);
 
-// Walk-mode integration loop
+// Touch anywhere else (drag on canvas) = look around
+let lookTouch = null;
+let lookLastX = 0, lookLastY = 0;
+stage.addEventListener('touchstart', e => {
+  if (mode !== 'walk') return;
+  for (const t of e.changedTouches) {
+    if (t.identifier === stickTouch) continue;  // skip the joystick finger
+    if (lookTouch === null) {
+      lookTouch = t.identifier;
+      lookLastX = t.clientX;
+      lookLastY = t.clientY;
+    }
+  }
+}, { passive: true });
+stage.addEventListener('touchmove', e => {
+  if (mode !== 'walk') return;
+  for (const t of e.changedTouches) {
+    if (t.identifier !== lookTouch) continue;
+    const dx = t.clientX - lookLastX;
+    const dy = t.clientY - lookLastY;
+    lookLastX = t.clientX;
+    lookLastY = t.clientY;
+    // Direct yaw/pitch application (apply now, in the loop too if we keep momentum)
+    applyLook(dx * 0.004, dy * 0.004);
+  }
+}, { passive: true });
+function lookEnd(e) {
+  for (const t of e.changedTouches) if (t.identifier === lookTouch) lookTouch = null;
+}
+stage.addEventListener('touchend', lookEnd);
+stage.addEventListener('touchcancel', lookEnd);
+
+// Mouse drag = look (desktop in walk mode)
+let mouseDown = false;
+let mouseLastX = 0, mouseLastY = 0;
+stage.addEventListener('mousedown', e => {
+  if (mode !== 'walk') return;
+  mouseDown = true;
+  mouseLastX = e.clientX;
+  mouseLastY = e.clientY;
+});
+addEventListener('mousemove', e => {
+  if (!mouseDown || mode !== 'walk') return;
+  applyLook((e.clientX - mouseLastX) * 0.004, (e.clientY - mouseLastY) * 0.004);
+  mouseLastX = e.clientX; mouseLastY = e.clientY;
+});
+addEventListener('mouseup', () => { mouseDown = false; });
+
+function applyLook(dyaw, dpitch) {
+  const e = new THREE.Euler().setFromQuaternion(viewer.camera.quaternion, 'YXZ');
+  e.y -= dyaw;
+  e.x -= dpitch;
+  e.x = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, e.x));
+  viewer.camera.quaternion.setFromEuler(e);
+}
+
+// Movement integration loop
 let lastT = performance.now();
 const camTmp = new THREE.Vector3();
 const dir = new THREE.Vector3();
 const right = new THREE.Vector3();
-const up = new THREE.Vector3(0, -1, 0);   // matches viewer's cameraUp
+const up = new THREE.Vector3(0, -1, 0);   // matches cameraUp
 function tick(t) {
   const dt = Math.min(0.05, (t - lastT) / 1000);
   lastT = t;
-  if (mode === 'walk') {
-    // Yaw/pitch from look pad
-    if (look.yaw || look.pitch) {
-      const e = new THREE.Euler().setFromQuaternion(viewer.camera.quaternion, 'YXZ');
-      e.y -= look.yaw * 1.5 * dt;
-      e.x -= look.pitch * 1.5 * dt;
-      e.x = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, e.x));
-      viewer.camera.quaternion.setFromEuler(e);
-    }
-    // Move along camera forward / right
-    if (move.fwd || move.right) {
-      viewer.camera.getWorldDirection(dir);
-      dir.y = 0; dir.normalize();
-      right.crossVectors(dir, up).normalize();
-      const speed = sceneRadius * 0.6;   // adapted to scene scale
-      camTmp.copy(dir).multiplyScalar(move.fwd * speed * dt);
-      camTmp.addScaledVector(right, move.right * speed * dt);
-      viewer.camera.position.add(camTmp);
-    }
+  if (mode === 'walk' && (move.fwd || move.right)) {
+    viewer.camera.getWorldDirection(dir);
+    dir.y = 0; dir.normalize();
+    right.crossVectors(dir, up).normalize();
+    const speed = sceneRadius * 0.6;
+    camTmp.copy(dir).multiplyScalar(move.fwd * speed * dt);
+    camTmp.addScaledVector(right, move.right * speed * dt);
+    viewer.camera.position.add(camTmp);
   }
   requestAnimationFrame(tick);
 }
