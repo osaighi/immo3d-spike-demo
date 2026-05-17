@@ -9,8 +9,7 @@
   html, body { margin:0; height:100%; background:#000; color:#fff;
                font-family:-apple-system,system-ui,sans-serif; overflow:hidden;
                overscroll-behavior:none }
-  #canvas { position:fixed; inset:0; width:100%; height:100%; outline:none;
-            touch-action:none }
+  #canvas { position:fixed; inset:0; width:100%; height:100%; outline:none; touch-action:none }
   #hud { position:fixed; top:max(12px,env(safe-area-inset-top)); left:12px;
          padding:8px 12px; background:rgba(0,0,0,.55); border-radius:8px;
          font-size:12px; backdrop-filter:blur(8px); pointer-events:none;
@@ -28,28 +27,20 @@
            left:20px; background:rgba(0,0,0,.7) }
   body.walking #enter { display:none }
   body.walking #exit, body.walking #reset { display:block }
-  #help { position:fixed; bottom:max(90px,calc(env(safe-area-inset-bottom)+90px));
-          left:50%; transform:translateX(-50%); padding:8px 14px;
-          background:rgba(0,0,0,.75); color:#fff; border-radius:8px;
-          font-size:12px; backdrop-filter:blur(8px); pointer-events:none;
-          transition: opacity 0.5s; z-index:10; text-align:center; max-width:90vw }
-  #help.fade { opacity:0 }
 </style>
 </head>
 <body>
 <canvas id="canvas"></canvas>
-<div id="hud">Loading…</div>
+<div id="hud">Loading splat (~80 MB)…</div>
 <button class="btn" id="enter">▶ Entrer dans la maison</button>
 <button class="btn" id="exit">↑ Sortir</button>
 <button class="btn" id="reset">⟲ Replacer</button>
-<div id="help" style="display:none"></div>
 
 <script src="https://cdn.babylonjs.com/babylon.js"></script>
 <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
 <script>
 const canvas = document.getElementById('canvas');
 const hud = document.getElementById('hud');
-const help = document.getElementById('help');
 const enterBtn = document.getElementById('enter');
 const exitBtn = document.getElementById('exit');
 const resetBtn = document.getElementById('reset');
@@ -57,95 +48,85 @@ const resetBtn = document.getElementById('reset');
 const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
 const scene = new BABYLON.Scene(engine);
 scene.clearColor = new BABYLON.Color4(0, 0, 0, 1);
-
-// Camera setup happens AFTER we load metadata (we need to know where the
-// actual scene is, not where the AABB centroid lies — the bbox is polluted
-// by outlier splats far from the apartment).
-let orbitCam = null, walkCam = null;
-let realCenter = new BABYLON.Vector3(0, 0, 0);
-let realRadius = 5;
-
 new BABYLON.HemisphericLight('h', new BABYLON.Vector3(0, 1, 0), scene);
 
-hud.textContent = 'Loading meta + splat…';
+// Create cameras FIRST (default position), wire UI, then load the splat,
+// then reframe based on actual bounding info. This avoids the "No camera
+// defined" first-frame race.
+const orbitCam = new BABYLON.ArcRotateCamera('orbit',
+  Math.PI / 4, Math.PI / 3, 5, BABYLON.Vector3.Zero(), scene);
+orbitCam.minZ = 0.001;
+orbitCam.maxZ = 5000;
+orbitCam.wheelDeltaPercentage = 0.02;
+orbitCam.pinchDeltaPercentage = 0.005;
+scene.activeCamera = orbitCam;
+orbitCam.attachControl(canvas, true);
 
-Promise.all([
-  fetch('./maison-meta.json').then(r => r.json()),
-  new Promise((resolve, reject) => {
-    const splat = new BABYLON.GaussianSplattingMesh('splat', null, scene);
-    splat.loadFileAsync('./maison-full.ply').then(() => resolve(splat)).catch(reject);
-  }),
-]).then(([meta, splat]) => {
-  realCenter = new BABYLON.Vector3(meta.center[0], meta.center[1], meta.center[2]);
-  realRadius = meta.radius;
+const walkCam = new BABYLON.UniversalCamera('walk',
+  new BABYLON.Vector3(0, 0, -5), scene);
+walkCam.minZ = 0.001;
+walkCam.maxZ = 5000;
+walkCam.angularSensibility = 4500;
+walkCam.inertia = 0.85;
+walkCam.keysUp = [87, 90, 38];
+walkCam.keysDown = [83, 40];
+walkCam.keysLeft = [65, 81, 37];
+walkCam.keysRight = [68, 39];
+if ('ontouchstart' in window) walkCam.inputs.addVirtualJoystick();
 
-  // Orbit camera centered on the actual interior, not the polluted AABB.
-  orbitCam = new BABYLON.ArcRotateCamera('orbit',
-    Math.PI / 4, Math.PI / 3,
-    realRadius * 1.5, realCenter, scene);
-  orbitCam.minZ = 0.01;
-  orbitCam.maxZ = 1000;
-  orbitCam.lowerRadiusLimit = realRadius * 0.3;
-  orbitCam.upperRadiusLimit = realRadius * 5;
-  orbitCam.wheelDeltaPercentage = 0.02;
-  orbitCam.pinchDeltaPercentage = 0.005;
-  scene.activeCamera = orbitCam;
-  orbitCam.attachControl(canvas, true);
+let sceneCenter = BABYLON.Vector3.Zero();
+let sceneRadius = 5;
+
+// Engine render loop runs immediately so we always have a camera
+engine.runRenderLoop(() => scene.render());
+addEventListener('resize', () => engine.resize());
+
+const splat = new BABYLON.GaussianSplattingMesh('splat', null, scene);
+splat.loadFileAsync('./maison-full.ply').then(() => {
+  // Use Babylon's own bounding info for reframing, in case the .ply
+  // coordinate frame doesn't match our externally-computed metadata.
+  const bb = splat.getBoundingInfo().boundingBox;
+  const min = bb.minimumWorld, max = bb.maximumWorld;
+  sceneCenter = max.add(min).scale(0.5);
+  sceneRadius = max.subtract(min).length() * 0.5;
+  console.log('splat bounds', { min: min.asArray(), max: max.asArray(),
+                                center: sceneCenter.asArray(), radius: sceneRadius });
+
+  // Place orbit OUTSIDE the splat cloud
+  orbitCam.target = sceneCenter;
+  orbitCam.radius = sceneRadius * 1.4;
+  orbitCam.lowerRadiusLimit = sceneRadius * 0.1;
+  orbitCam.upperRadiusLimit = sceneRadius * 4;
+  walkCam.speed = sceneRadius * 0.015;
 
   hud.textContent = 'Vue d\'ensemble · drag = orbiter · pinch = zoom';
 }).catch(e => {
-  hud.textContent = 'Erreur : ' + e.message;
+  hud.textContent = 'Erreur load : ' + e.message;
   console.error(e);
 });
 
 enterBtn.onclick = () => {
-  if (!realCenter) return;
   document.body.classList.add('walking');
-  if (!walkCam) {
-    walkCam = new BABYLON.UniversalCamera('walk', realCenter.clone(), scene);
-    walkCam.minZ = 0.01;
-    walkCam.maxZ = 1000;
-    walkCam.speed = realRadius * 0.025;
-    walkCam.angularSensibility = 4500;
-    walkCam.inertia = 0.85;
-    walkCam.keysUp = [87, 90, 38];
-    walkCam.keysDown = [83, 40];
-    walkCam.keysLeft = [65, 81, 37];
-    walkCam.keysRight = [68, 39];
-    if ('ontouchstart' in window) {
-      walkCam.inputs.addVirtualJoystick();
-    }
-  }
-  walkCam.position = realCenter.clone();
-  walkCam.setTarget(realCenter.add(new BABYLON.Vector3(1, 0, 0)));
+  walkCam.position = sceneCenter.clone();
+  walkCam.setTarget(sceneCenter.add(new BABYLON.Vector3(1, 0, 0)));
   orbitCam.detachControl();
   scene.activeCamera = walkCam;
   walkCam.attachControl(canvas, true);
-  hud.textContent = 'Visite';
-  help.style.display = 'block';
-  help.classList.remove('fade');
-  help.textContent = '👆 drag = regarder · 🕹️ joystick (apparait au toucher) = bouger';
-  setTimeout(() => help.classList.add('fade'), 6000);
+  hud.textContent = 'Visite · drag = regarder · joystick = bouger';
 };
 
 exitBtn.onclick = () => {
   document.body.classList.remove('walking');
-  if (walkCam) walkCam.detachControl();
+  walkCam.detachControl();
   scene.activeCamera = orbitCam;
   orbitCam.attachControl(canvas, true);
   hud.textContent = 'Vue d\'ensemble';
-  help.style.display = 'none';
 };
 
 resetBtn.onclick = () => {
-  if (walkCam) {
-    walkCam.position = realCenter.clone();
-    walkCam.setTarget(realCenter.add(new BABYLON.Vector3(1, 0, 0)));
-  }
+  walkCam.position = sceneCenter.clone();
+  walkCam.setTarget(sceneCenter.add(new BABYLON.Vector3(1, 0, 0)));
 };
-
-engine.runRenderLoop(() => scene.render());
-addEventListener('resize', () => engine.resize());
 </script>
 </body>
 </html>
