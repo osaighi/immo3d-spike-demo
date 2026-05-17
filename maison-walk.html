@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
-<title>Immo3D — visite immersive</title>
+<title>Immo3D — visite</title>
 <style>
   * { box-sizing: border-box; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
   html, body { margin:0; height:100%; background:#000; color:#fff;
@@ -14,26 +14,35 @@
   #hud { position:fixed; top:max(12px,env(safe-area-inset-top)); left:12px;
          padding:8px 12px; background:rgba(0,0,0,.55); border-radius:8px;
          font-size:12px; backdrop-filter:blur(8px); pointer-events:none;
-         max-width: 60vw; z-index:10 }
-  #help { position:fixed; bottom:max(20px,env(safe-area-inset-bottom));
-          left:50%; transform:translateX(-50%); padding:10px 16px;
+         max-width:65vw; z-index:10 }
+  .btn { position:fixed; padding:12px 18px; color:#fff; border:0;
+         border-radius:12px; font-size:14px; font-family:inherit;
+         backdrop-filter:blur(8px); cursor:pointer; z-index:20;
+         box-shadow:0 4px 16px rgba(0,0,0,.4) }
+  #enter { bottom:max(20px,env(safe-area-inset-bottom)); left:50%;
+           transform:translateX(-50%); background:rgba(31,79,255,.95);
+           font-weight:600; font-size:15px; padding:14px 24px }
+  #exit { display:none; bottom:max(20px,env(safe-area-inset-bottom));
+          right:20px; background:rgba(0,0,0,.7) }
+  #reset { display:none; bottom:max(20px,env(safe-area-inset-bottom));
+           left:20px; background:rgba(0,0,0,.7) }
+  body.walking #enter { display:none }
+  body.walking #exit, body.walking #reset { display:block }
+  #help { position:fixed; bottom:max(90px,calc(env(safe-area-inset-bottom)+90px));
+          left:50%; transform:translateX(-50%); padding:8px 14px;
           background:rgba(0,0,0,.75); color:#fff; border-radius:8px;
-          font-size:13px; backdrop-filter:blur(8px); pointer-events:none;
-          transition: opacity 0.5s; z-index:10; text-align:center;
-          max-width: 92vw }
+          font-size:12px; backdrop-filter:blur(8px); pointer-events:none;
+          transition: opacity 0.5s; z-index:10; text-align:center; max-width:90vw }
   #help.fade { opacity:0 }
-  #reset { position:fixed; bottom:max(20px,env(safe-area-inset-bottom));
-           right:20px; padding:10px 14px; background:rgba(0,0,0,.7);
-           color:#fff; border:0; border-radius:10px; font-size:13px;
-           font-family:inherit; backdrop-filter:blur(8px); cursor:pointer;
-           z-index:11 }
 </style>
 </head>
 <body>
 <canvas id="canvas"></canvas>
 <div id="hud">Loading…</div>
-<div id="help">Tap puis drag = regarder · joystick = bouger · WASD au clavier</div>
-<button id="reset">⟲ Reset</button>
+<button class="btn" id="enter">▶ Entrer dans la maison</button>
+<button class="btn" id="exit">↑ Sortir</button>
+<button class="btn" id="reset">⟲ Replacer</button>
+<div id="help" style="display:none"></div>
 
 <script src="https://cdn.babylonjs.com/babylon.js"></script>
 <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
@@ -41,66 +50,99 @@
 const canvas = document.getElementById('canvas');
 const hud = document.getElementById('hud');
 const help = document.getElementById('help');
+const enterBtn = document.getElementById('enter');
+const exitBtn = document.getElementById('exit');
+const resetBtn = document.getElementById('reset');
+
 const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
 const scene = new BABYLON.Scene(engine);
 scene.clearColor = new BABYLON.Color4(0, 0, 0, 1);
 
-// UniversalCamera = first-person with WASD + mouse + touch (virtual joystick)
-const camera = new BABYLON.UniversalCamera('cam', new BABYLON.Vector3(0, 0, -3), scene);
-camera.minZ = 0.01;
-camera.maxZ = 200;
-camera.speed = 0.05;          // walking speed (units/frame at 60fps)
-camera.angularSensibility = 4000;  // higher = LESS sensitive look
-camera.inertia = 0.85;        // smoothing
-camera.keysUp    = [87, 90, 38];   // W, Z, Up
-camera.keysDown  = [83, 40];        // S, Down
-camera.keysLeft  = [65, 81, 37];    // A, Q, Left
-camera.keysRight = [68, 39];        // D, Right
-camera.attachControl(canvas, true);
+// Start in orbit mode so user sees the whole house from outside
+const orbitCam = new BABYLON.ArcRotateCamera('orbit', Math.PI / 4, Math.PI / 3, 10,
+  BABYLON.Vector3.Zero(), scene);
+orbitCam.minZ = 0.01;
+orbitCam.lowerRadiusLimit = 0.5;
+orbitCam.wheelDeltaPercentage = 0.02;
+orbitCam.pinchDeltaPercentage = 0.005;
+scene.activeCamera = orbitCam;
+orbitCam.attachControl(canvas, true);
 
-// Enable Babylon's built-in virtual joystick for touch devices
-const onTouch = 'ontouchstart' in window;
-if (onTouch) {
-  camera.inputs.addVirtualJoystick();
-}
-
-// Light just for the splat metadata (splats are emissive but Babylon expects a light)
 new BABYLON.HemisphericLight('h', new BABYLON.Vector3(0, 1, 0), scene);
 
+let walkCam = null;
+let sceneCenter = BABYLON.Vector3.Zero();
+let sceneRadius = 1;
+let entryPoint = BABYLON.Vector3.Zero();
+
 hud.textContent = 'Loading…';
-const splatUrl = new URLSearchParams(location.search).get('url') || './maison-hq.ply';
+const url = new URLSearchParams(location.search).get('url') || './maison-clean.ply';
 const splat = new BABYLON.GaussianSplattingMesh('splat', null, scene);
-splat.loadFileAsync(splatUrl).then(() => {
-  // Compute bounds to place camera nicely
+splat.loadFileAsync(url).then(() => {
   const bb = splat.getBoundingInfo().boundingBox;
   const min = bb.minimumWorld, max = bb.maximumWorld;
-  const center = max.add(min).scale(0.5);
+  sceneCenter = max.add(min).scale(0.5);
   const size = max.subtract(min);
-  const radius = size.length() * 0.5;
-  // Place camera inside the scene, head-height (mid Y), looking toward center
-  camera.position = new BABYLON.Vector3(center.x, center.y, min.z - radius * 0.2);
-  camera.setTarget(center);
-  // Speed scaled to scene
-  camera.speed = radius * 0.05;
-  hud.textContent = 'Visite immersive';
-  setTimeout(() => help.classList.add('fade'), 6000);
+  sceneRadius = size.length() * 0.5;
+
+  // Orbit camera: framed externally
+  orbitCam.target = sceneCenter;
+  orbitCam.radius = sceneRadius * 1.6;
+  orbitCam.lowerRadiusLimit = sceneRadius * 0.1;
+  orbitCam.upperRadiusLimit = sceneRadius * 5;
+
+  // Pre-build walk camera for later (head height = center, on the longest axis)
+  // We don't know which axis is "up" so we pick the SHORTEST scene axis as up
+  // (rooms are usually wider than tall). Spawn at scene center on that axis.
+  entryPoint = sceneCenter.clone();
+  hud.textContent = 'Vue d\'ensemble · drag = orbiter · pinch = zoom';
 }).catch(e => {
   hud.textContent = 'Erreur : ' + e.message;
   console.error(e);
 });
 
-let initialPos = null, initialTarget = null;
-setTimeout(() => {
-  initialPos = camera.position.clone();
-  initialTarget = camera.getTarget().clone();
-}, 800);
+enterBtn.onclick = () => {
+  document.body.classList.add('walking');
+  if (!walkCam) {
+    walkCam = new BABYLON.UniversalCamera('walk', entryPoint.clone(), scene);
+    walkCam.minZ = 0.01;
+    walkCam.maxZ = 200;
+    walkCam.speed = sceneRadius * 0.04;
+    walkCam.angularSensibility = 4500;
+    walkCam.inertia = 0.85;
+    walkCam.keysUp = [87, 90, 38];
+    walkCam.keysDown = [83, 40];
+    walkCam.keysLeft = [65, 81, 37];
+    walkCam.keysRight = [68, 39];
+    if ('ontouchstart' in window) {
+      walkCam.inputs.addVirtualJoystick();
+    }
+  }
+  walkCam.position = entryPoint.clone();
+  walkCam.setTarget(sceneCenter.add(new BABYLON.Vector3(1, 0, 0)));
+  orbitCam.detachControl();
+  scene.activeCamera = walkCam;
+  walkCam.attachControl(canvas, true);
+  hud.textContent = 'Mode visite';
+  help.style.display = 'block';
+  help.classList.remove('fade');
+  help.textContent = '👆 drag = regarder · 🕹️ joystick (apparait au toucher) = bouger';
+  setTimeout(() => help.classList.add('fade'), 6000);
+};
 
-document.getElementById('reset').onclick = () => {
-  if (initialPos) {
-    camera.position = initialPos.clone();
-    camera.setTarget(initialTarget.clone());
-    camera.cameraRotation.x = 0;
-    camera.cameraRotation.y = 0;
+exitBtn.onclick = () => {
+  document.body.classList.remove('walking');
+  if (walkCam) walkCam.detachControl();
+  scene.activeCamera = orbitCam;
+  orbitCam.attachControl(canvas, true);
+  hud.textContent = 'Vue d\'ensemble';
+  help.style.display = 'none';
+};
+
+resetBtn.onclick = () => {
+  if (walkCam) {
+    walkCam.position = entryPoint.clone();
+    walkCam.setTarget(sceneCenter.add(new BABYLON.Vector3(1, 0, 0)));
   }
 };
 
