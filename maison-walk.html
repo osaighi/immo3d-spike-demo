@@ -58,43 +58,40 @@ const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, s
 const scene = new BABYLON.Scene(engine);
 scene.clearColor = new BABYLON.Color4(0, 0, 0, 1);
 
-// Start in orbit mode so user sees the whole house from outside
-const orbitCam = new BABYLON.ArcRotateCamera('orbit', Math.PI / 4, Math.PI / 3, 10,
-  BABYLON.Vector3.Zero(), scene);
-orbitCam.minZ = 0.01;
-orbitCam.lowerRadiusLimit = 0.5;
-orbitCam.wheelDeltaPercentage = 0.02;
-orbitCam.pinchDeltaPercentage = 0.005;
-scene.activeCamera = orbitCam;
-orbitCam.attachControl(canvas, true);
+// Camera setup happens AFTER we load metadata (we need to know where the
+// actual scene is, not where the AABB centroid lies — the bbox is polluted
+// by outlier splats far from the apartment).
+let orbitCam = null, walkCam = null;
+let realCenter = new BABYLON.Vector3(0, 0, 0);
+let realRadius = 5;
 
 new BABYLON.HemisphericLight('h', new BABYLON.Vector3(0, 1, 0), scene);
 
-let walkCam = null;
-let sceneCenter = BABYLON.Vector3.Zero();
-let sceneRadius = 1;
-let entryPoint = BABYLON.Vector3.Zero();
+hud.textContent = 'Loading meta + splat…';
 
-hud.textContent = 'Loading…';
-const url = new URLSearchParams(location.search).get('url') || './maison-full.ply';
-const splat = new BABYLON.GaussianSplattingMesh('splat', null, scene);
-splat.loadFileAsync(url).then(() => {
-  const bb = splat.getBoundingInfo().boundingBox;
-  const min = bb.minimumWorld, max = bb.maximumWorld;
-  sceneCenter = max.add(min).scale(0.5);
-  const size = max.subtract(min);
-  sceneRadius = size.length() * 0.5;
+Promise.all([
+  fetch('./maison-meta.json').then(r => r.json()),
+  new Promise((resolve, reject) => {
+    const splat = new BABYLON.GaussianSplattingMesh('splat', null, scene);
+    splat.loadFileAsync('./maison-full.ply').then(() => resolve(splat)).catch(reject);
+  }),
+]).then(([meta, splat]) => {
+  realCenter = new BABYLON.Vector3(meta.center[0], meta.center[1], meta.center[2]);
+  realRadius = meta.radius;
 
-  // Orbit camera: framed externally
-  orbitCam.target = sceneCenter;
-  orbitCam.radius = sceneRadius * 1.6;
-  orbitCam.lowerRadiusLimit = sceneRadius * 0.1;
-  orbitCam.upperRadiusLimit = sceneRadius * 5;
+  // Orbit camera centered on the actual interior, not the polluted AABB.
+  orbitCam = new BABYLON.ArcRotateCamera('orbit',
+    Math.PI / 4, Math.PI / 3,
+    realRadius * 0.6, realCenter, scene);
+  orbitCam.minZ = 0.01;
+  orbitCam.maxZ = 1000;
+  orbitCam.lowerRadiusLimit = realRadius * 0.05;
+  orbitCam.upperRadiusLimit = realRadius * 2.5;
+  orbitCam.wheelDeltaPercentage = 0.02;
+  orbitCam.pinchDeltaPercentage = 0.005;
+  scene.activeCamera = orbitCam;
+  orbitCam.attachControl(canvas, true);
 
-  // Pre-build walk camera for later (head height = center, on the longest axis)
-  // We don't know which axis is "up" so we pick the SHORTEST scene axis as up
-  // (rooms are usually wider than tall). Spawn at scene center on that axis.
-  entryPoint = sceneCenter.clone();
   hud.textContent = 'Vue d\'ensemble · drag = orbiter · pinch = zoom';
 }).catch(e => {
   hud.textContent = 'Erreur : ' + e.message;
@@ -102,12 +99,13 @@ splat.loadFileAsync(url).then(() => {
 });
 
 enterBtn.onclick = () => {
+  if (!realCenter) return;
   document.body.classList.add('walking');
   if (!walkCam) {
-    walkCam = new BABYLON.UniversalCamera('walk', entryPoint.clone(), scene);
+    walkCam = new BABYLON.UniversalCamera('walk', realCenter.clone(), scene);
     walkCam.minZ = 0.01;
-    walkCam.maxZ = 200;
-    walkCam.speed = sceneRadius * 0.04;
+    walkCam.maxZ = 1000;
+    walkCam.speed = realRadius * 0.025;
     walkCam.angularSensibility = 4500;
     walkCam.inertia = 0.85;
     walkCam.keysUp = [87, 90, 38];
@@ -118,12 +116,12 @@ enterBtn.onclick = () => {
       walkCam.inputs.addVirtualJoystick();
     }
   }
-  walkCam.position = entryPoint.clone();
-  walkCam.setTarget(sceneCenter.add(new BABYLON.Vector3(1, 0, 0)));
+  walkCam.position = realCenter.clone();
+  walkCam.setTarget(realCenter.add(new BABYLON.Vector3(1, 0, 0)));
   orbitCam.detachControl();
   scene.activeCamera = walkCam;
   walkCam.attachControl(canvas, true);
-  hud.textContent = 'Mode visite';
+  hud.textContent = 'Visite';
   help.style.display = 'block';
   help.classList.remove('fade');
   help.textContent = '👆 drag = regarder · 🕹️ joystick (apparait au toucher) = bouger';
@@ -141,8 +139,8 @@ exitBtn.onclick = () => {
 
 resetBtn.onclick = () => {
   if (walkCam) {
-    walkCam.position = entryPoint.clone();
-    walkCam.setTarget(sceneCenter.add(new BABYLON.Vector3(1, 0, 0)));
+    walkCam.position = realCenter.clone();
+    walkCam.setTarget(realCenter.add(new BABYLON.Vector3(1, 0, 0)));
   }
 };
 
