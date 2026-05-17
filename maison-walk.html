@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<title>Immo3D — visite immersive</title>
+<style>
+  * { box-sizing: border-box; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+  html, body { margin:0; height:100%; background:#000; color:#fff;
+               font-family:-apple-system,system-ui,sans-serif; overflow:hidden;
+               overscroll-behavior:none }
+  #canvas { position:fixed; inset:0; width:100%; height:100%; outline:none;
+            touch-action:none }
+  #hud { position:fixed; top:max(12px,env(safe-area-inset-top)); left:12px;
+         padding:8px 12px; background:rgba(0,0,0,.55); border-radius:8px;
+         font-size:12px; backdrop-filter:blur(8px); pointer-events:none;
+         max-width: 60vw; z-index:10 }
+  #help { position:fixed; bottom:max(20px,env(safe-area-inset-bottom));
+          left:50%; transform:translateX(-50%); padding:10px 16px;
+          background:rgba(0,0,0,.75); color:#fff; border-radius:8px;
+          font-size:13px; backdrop-filter:blur(8px); pointer-events:none;
+          transition: opacity 0.5s; z-index:10; text-align:center;
+          max-width: 92vw }
+  #help.fade { opacity:0 }
+  #reset { position:fixed; bottom:max(20px,env(safe-area-inset-bottom));
+           right:20px; padding:10px 14px; background:rgba(0,0,0,.7);
+           color:#fff; border:0; border-radius:10px; font-size:13px;
+           font-family:inherit; backdrop-filter:blur(8px); cursor:pointer;
+           z-index:11 }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div id="hud">Loading…</div>
+<div id="help">Tap puis drag = regarder · joystick = bouger · WASD au clavier</div>
+<button id="reset">⟲ Reset</button>
+
+<script src="https://cdn.babylonjs.com/babylon.js"></script>
+<script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+<script>
+const canvas = document.getElementById('canvas');
+const hud = document.getElementById('hud');
+const help = document.getElementById('help');
+const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
+const scene = new BABYLON.Scene(engine);
+scene.clearColor = new BABYLON.Color4(0, 0, 0, 1);
+
+// UniversalCamera = first-person with WASD + mouse + touch (virtual joystick)
+const camera = new BABYLON.UniversalCamera('cam', new BABYLON.Vector3(0, 0, -3), scene);
+camera.minZ = 0.01;
+camera.maxZ = 200;
+camera.speed = 0.05;          // walking speed (units/frame at 60fps)
+camera.angularSensibility = 4000;  // higher = LESS sensitive look
+camera.inertia = 0.85;        // smoothing
+camera.keysUp    = [87, 90, 38];   // W, Z, Up
+camera.keysDown  = [83, 40];        // S, Down
+camera.keysLeft  = [65, 81, 37];    // A, Q, Left
+camera.keysRight = [68, 39];        // D, Right
+camera.attachControl(canvas, true);
+
+// Enable Babylon's built-in virtual joystick for touch devices
+const onTouch = 'ontouchstart' in window;
+if (onTouch) {
+  camera.inputs.addVirtualJoystick();
+}
+
+// Light just for the splat metadata (splats are emissive but Babylon expects a light)
+new BABYLON.HemisphericLight('h', new BABYLON.Vector3(0, 1, 0), scene);
+
+hud.textContent = 'Loading…';
+const splatUrl = new URLSearchParams(location.search).get('url') || './maison-hq.ply';
+const splat = new BABYLON.GaussianSplattingMesh('splat', null, scene);
+splat.loadFileAsync(splatUrl).then(() => {
+  // Compute bounds to place camera nicely
+  const bb = splat.getBoundingInfo().boundingBox;
+  const min = bb.minimumWorld, max = bb.maximumWorld;
+  const center = max.add(min).scale(0.5);
+  const size = max.subtract(min);
+  const radius = size.length() * 0.5;
+  // Place camera inside the scene, head-height (mid Y), looking toward center
+  camera.position = new BABYLON.Vector3(center.x, center.y, min.z - radius * 0.2);
+  camera.setTarget(center);
+  // Speed scaled to scene
+  camera.speed = radius * 0.05;
+  hud.textContent = 'Visite immersive';
+  setTimeout(() => help.classList.add('fade'), 6000);
+}).catch(e => {
+  hud.textContent = 'Erreur : ' + e.message;
+  console.error(e);
+});
+
+let initialPos = null, initialTarget = null;
+setTimeout(() => {
+  initialPos = camera.position.clone();
+  initialTarget = camera.getTarget().clone();
+}, 800);
+
+document.getElementById('reset').onclick = () => {
+  if (initialPos) {
+    camera.position = initialPos.clone();
+    camera.setTarget(initialTarget.clone());
+    camera.cameraRotation.x = 0;
+    camera.cameraRotation.y = 0;
+  }
+};
+
+engine.runRenderLoop(() => scene.render());
+addEventListener('resize', () => engine.resize());
+</script>
+</body>
+</html>
