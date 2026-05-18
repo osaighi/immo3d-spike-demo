@@ -261,6 +261,7 @@ function tryCapture() {
     // Thumbnail dataURL for the strip
     const thumb = tmp.toDataURL('image/jpeg', 0.5);
     captured.push({ idx, ori, blob, thumb, ts: Date.now() });
+    lastCaptureOri = { ...ori };
     const cell = cellIndex(ori.alpha, ori.beta);
     coverage.add(cell);
     frameCountEl.textContent = captured.length;
