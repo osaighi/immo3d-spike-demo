@@ -159,40 +159,59 @@ function inJoystick(x, y) {
   const r = document.getElementById('joystick').getBoundingClientRect();
   return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
 }
-stage.addEventListener('touchstart', e => {
+// mkkellogg's viewer attaches its own touch handlers to the canvas. We
+// register at DOCUMENT level in CAPTURE phase so we run BEFORE those and can
+// stopImmediatePropagation when walk mode is active.
+document.addEventListener('touchstart', e => {
   if (mode !== 'walk') return;
   for (const t of e.changedTouches) {
     if (inJoystick(t.clientX, t.clientY)) continue;
     if (lookTouch === null) {
       lookTouch = t.identifier;
       lookLastX = t.clientX; lookLastY = t.clientY;
+      e.preventDefault();
+      e.stopImmediatePropagation();
     }
   }
-}, { passive: true });
-stage.addEventListener('touchmove', e => {
+}, { capture: true, passive: false });
+
+document.addEventListener('touchmove', e => {
   if (mode !== 'walk') return;
   for (const t of e.changedTouches) {
     if (t.identifier !== lookTouch) continue;
     const dx = t.clientX - lookLastX, dy = t.clientY - lookLastY;
     lookLastX = t.clientX; lookLastY = t.clientY;
-    applyLook(dx * 0.004, dy * 0.004);
+    applyLook(dx * 0.005, dy * 0.005);
+    e.preventDefault();
+    e.stopImmediatePropagation();
   }
-}, { passive: true });
-function lookEnd(e) {
-  for (const t of e.changedTouches) if (t.identifier === lookTouch) lookTouch = null;
-}
-stage.addEventListener('touchend', lookEnd);
-stage.addEventListener('touchcancel', lookEnd);
+}, { capture: true, passive: false });
 
-// Mouse drag (desktop walk mode)
+function lookEnd(e) {
+  for (const t of e.changedTouches) {
+    if (t.identifier === lookTouch) {
+      lookTouch = null;
+      if (mode === 'walk') e.stopImmediatePropagation();
+    }
+  }
+}
+document.addEventListener('touchend', lookEnd, { capture: true, passive: false });
+document.addEventListener('touchcancel', lookEnd, { capture: true, passive: false });
+
+// Mouse (desktop) — same capture priority
 let mDown = false, mLX = 0, mLY = 0;
-stage.addEventListener('mousedown', e => { if (mode==='walk') { mDown=true; mLX=e.clientX; mLY=e.clientY; } });
-addEventListener('mousemove', e => {
+document.addEventListener('mousedown', e => {
+  if (mode !== 'walk' || inJoystick(e.clientX, e.clientY)) return;
+  mDown = true; mLX = e.clientX; mLY = e.clientY;
+  e.stopImmediatePropagation();
+}, { capture: true });
+document.addEventListener('mousemove', e => {
   if (!mDown || mode !== 'walk') return;
-  applyLook((e.clientX - mLX)*0.004, (e.clientY - mLY)*0.004);
-  mLX=e.clientX; mLY=e.clientY;
-});
-addEventListener('mouseup', () => mDown=false);
+  applyLook((e.clientX - mLX) * 0.005, (e.clientY - mLY) * 0.005);
+  mLX = e.clientX; mLY = e.clientY;
+  e.stopImmediatePropagation();
+}, { capture: true });
+document.addEventListener('mouseup', () => mDown = false, { capture: true });
 
 // Keyboard
 addEventListener('keydown', e => {
