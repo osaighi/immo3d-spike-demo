@@ -22,7 +22,7 @@
 </head>
 <body>
 <div id="stage"></div>
-<div id="hud">Loading 74 MB…</div>
+<div id="hud">Loading 1.4 MB…</div>
 <button id="reset">⟲</button>
 <script type="importmap">
 { "imports": {
@@ -39,7 +39,7 @@ const viewer = new GS.Viewer({
   sharedMemoryForWorkers: false,
 });
 viewer.addSplatScene('./maison-mast3r.ksplat', { format: GS.SceneFormat.KSplat, progressiveLoad: true })
-  .then(() => { hud.textContent = 'Maison MASt3R+InstantSplat · 11 min · $0.13 · 24 vues · 5k iters'; viewer.start(); })
+  .then(() => { hud.textContent = 'Maison MASt3R+InstantSplat · 11 min · $0.13 · 24 vues · 2k iters + clean'; viewer.start(); })
   .catch(e => { hud.textContent = 'Erreur : ' + e.message; });
 document.getElementById('reset').onclick = () => location.reload();
 </script>
