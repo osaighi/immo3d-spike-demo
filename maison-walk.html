@@ -82,7 +82,7 @@ engine.runRenderLoop(() => scene.render());
 addEventListener('resize', () => engine.resize());
 
 const splat = new BABYLON.GaussianSplattingMesh('splat', null, scene);
-splat.loadFileAsync('./maison-tight.ply?v=2').then(() => {
+splat.loadFileAsync('./maison-cull.ply?v=cull').then(() => {
   // Use Babylon's own bounding info for reframing, in case the .ply
   // coordinate frame doesn't match our externally-computed metadata.
   const bb = splat.getBoundingInfo().boundingBox;
