@@ -232,6 +232,14 @@ function applyLook(dyaw, dpitch) {
   e.x -= dpitch;
   e.x = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, e.x));
   viewer.camera.quaternion.setFromEuler(e);
+  // Re-anchor the (disabled but still-updated) OrbitControls target to a
+  // point 1m ahead of the new look direction so its update() doesn't rotate
+  // the camera back.
+  if (viewer.controls && viewer.controls.target) {
+    const fwd = new THREE.Vector3();
+    viewer.camera.getWorldDirection(fwd);
+    viewer.controls.target.copy(viewer.camera.position).addScaledVector(fwd, 1);
+  }
 }
 
 let lastT = performance.now();
@@ -245,6 +253,11 @@ function tick(t) {
     tmp.copy(dir).multiplyScalar(move.fwd * speed * dt);
     tmp.addScaledVector(right, move.right * speed * dt);
     viewer.camera.position.add(tmp);
+    // Drag the controls target along so OrbitControls.update() doesn't
+    // re-orient the camera every frame.
+    if (viewer.controls && viewer.controls.target) {
+      viewer.controls.target.add(tmp);
+    }
   }
   requestAnimationFrame(tick);
 }
