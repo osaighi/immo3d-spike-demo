@@ -19,7 +19,7 @@
 </head>
 <body>
 <div id="stage"></div>
-<div id="hud">Loading 1.9 MB…</div>
+<div id="hud">Loading 8.6 MB · 370k splats…</div>
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js",
@@ -35,7 +35,7 @@ const viewer = new GS.Viewer({
   sharedMemoryForWorkers: false,
 });
 viewer.addSplatScene('./maison-pwa.ksplat', { format: GS.SceneFormat.KSplat, progressiveLoad: true })
-  .then(() => { hud.textContent = 'PWA capture (20 frames) → InstantSplat 2k iters → 1.9 MB · drag = orbiter'; viewer.start(); })
+  .then(() => { hud.textContent = 'PWA capture (20 frames) → InstantSplat 2k iters → 8.6 MB · 370k splats · drag = orbiter'; viewer.start(); })
   .catch(e => { hud.textContent = 'Erreur : ' + e.message; });
 </script>
 </body>
