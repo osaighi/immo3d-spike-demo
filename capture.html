@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<title>Immo3D — Capture guidée</title>
+<style>
+  * { box-sizing: border-box; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+  html, body { margin:0; height:100%; background:#000; color:#fff;
+               font-family:-apple-system,system-ui,sans-serif; overflow:hidden;
+               overscroll-behavior:none }
+  #video, #canvasFrame { position:fixed; inset:0; width:100%; height:100%;
+                         object-fit:cover; touch-action:none }
+  #canvasFrame { display:none }
+  #hud { position:fixed; top:max(12px,env(safe-area-inset-top)); left:12px;
+         right:12px; padding:10px 14px; background:rgba(0,0,0,.6);
+         border-radius:10px; font-size:13px; backdrop-filter:blur(10px);
+         pointer-events:none; z-index:10; display:flex; justify-content:space-between }
+  #progressRing { position:fixed; top:50%; left:50%;
+                  transform:translate(-50%,-50%); width:200px; height:200px;
+                  pointer-events:none; z-index:5; opacity:0.7 }
+  #instruction { position:fixed; top:30%; left:0; right:0; text-align:center;
+                 font-size:18px; font-weight:600; text-shadow:0 2px 8px rgba(0,0,0,.9);
+                 pointer-events:none; z-index:10; padding:0 20px;
+                 transition: all 0.3s }
+  #frameStrip { position:fixed; bottom:max(110px,calc(env(safe-area-inset-bottom)+110px));
+                left:0; right:0; height:60px; padding:8px 12px;
+                overflow-x:auto; overflow-y:hidden;
+                white-space:nowrap; z-index:10;
+                background:linear-gradient(180deg, transparent, rgba(0,0,0,.4)) }
+  #frameStrip img { height:50px; margin-right:4px; border-radius:4px;
+                    border:1px solid rgba(255,255,255,.3); vertical-align:top }
+  #controls { position:fixed; bottom:max(20px,env(safe-area-inset-bottom));
+              left:0; right:0; display:flex; justify-content:center; gap:14px;
+              z-index:20 }
+  .btn { padding:14px 22px; color:#fff; border:0; border-radius:14px;
+         font-size:15px; font-weight:600; font-family:inherit;
+         backdrop-filter:blur(10px); cursor:pointer;
+         box-shadow:0 6px 20px rgba(0,0,0,.5) }
+  .btn.primary { background:rgba(31,79,255,.95); padding:16px 28px; font-size:16px }
+  .btn.secondary { background:rgba(0,0,0,.65) }
+  .btn.danger { background:rgba(220,30,40,.95) }
+  #permPrompt { position:fixed; inset:0; background:rgba(0,0,0,.92);
+                display:flex; align-items:center; justify-content:center;
+                padding:40px 20px; z-index:30; text-align:center }
+  #permPrompt h1 { font-size:22px; margin:0 0 12px }
+  #permPrompt p { font-size:14px; line-height:1.5; opacity:0.85; margin:0 0 24px;
+                  max-width:340px }
+  #blurWarn { position:fixed; top:50%; left:50%;
+              transform:translate(-50%,calc(-50% + 130px));
+              padding:6px 12px; background:rgba(220,30,40,.85);
+              border-radius:8px; font-size:13px; z-index:10;
+              opacity:0; transition:opacity 0.2s; pointer-events:none }
+  #blurWarn.on { opacity:1 }
+</style>
+</head>
+<body>
+
+<div id="permPrompt">
+  <div>
+    <h1>📸 Capture guidée Immo3D</h1>
+    <p>Cette page va te demander l'accès à la caméra et aux capteurs de mouvement de ton iPhone, pour capturer ton bien immobilier en 3D.</p>
+    <button class="btn primary" id="permBtn">Activer caméra + capteurs</button>
+  </div>
+</div>
+
+<video id="video" autoplay playsinline muted></video>
+<canvas id="canvasFrame"></canvas>
+
+<div id="hud">
+  <span>Frames : <b id="frameCount">0</b> / 30</span>
+  <span>Couverture : <b id="coverPct">0%</b></span>
+</div>
+
+<canvas id="progressRing" width="200" height="200"></canvas>
+<div id="instruction">Active la caméra pour commencer</div>
+<div id="blurWarn">⚠ Bouge plus lentement</div>
+
+<div id="frameStrip"></div>
+
+<div id="controls" style="display:none">
+  <button class="btn secondary" id="resetBtn">↺ Recommencer</button>
+  <button class="btn primary" id="exportBtn" disabled>📤 Exporter (0 frames)</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script>
+const video = document.getElementById('video');
+const canvasFrame = document.getElementById('canvasFrame');
+const ctxFrame = canvasFrame.getContext('2d');
+const ring = document.getElementById('progressRing');
+const ringCtx = ring.getContext('2d');
+const inst = document.getElementById('instruction');
+const blurWarn = document.getElementById('blurWarn');
+const frameCountEl = document.getElementById('frameCount');
+const coverPctEl = document.getElementById('coverPct');
+const frameStrip = document.getElementById('frameStrip');
+const exportBtn = document.getElementById('exportBtn');
+const resetBtn = document.getElementById('resetBtn');
+const controls = document.getElementById('controls');
+const permPrompt = document.getElementById('permPrompt');
+
+// State
+const TARGET_FRAMES = 30;
+const COVERAGE_CELLS = 24;  // 8 yaw bins × 3 pitch bins
+const captured = [];   // { idx, alpha, beta, gamma, ts, thumb (small JPEG dataURL), full (blob) }
+const coverage = new Set();
+let lastCaptureOri = null;
+let currentOri = { alpha: 0, beta: 0, gamma: 0 };
+let lastFrameTime = 0;
+let lastBlurScore = 0;
+
+function cellIndex(alpha, beta) {
+  // alpha 0-360 (yaw), beta -180..180 (tilt). We use yaw bins + pitch bins.
+  const yawBin = Math.floor(((alpha % 360 + 360) % 360) / 360 * 8);
+  // beta typically -90..90 when phone is held horizontally;
+  // we bin into 3: looking down/horizontal/up
+  const pitchBin = beta < -30 ? 0 : (beta > 30 ? 2 : 1);
+  return yawBin * 3 + pitchBin;
+}
+
+function angularDistance(a, b) {
+  if (!a || !b) return 360;
+  const dAlpha = Math.min(Math.abs(a.alpha - b.alpha), 360 - Math.abs(a.alpha - b.alpha));
+  const dBeta = Math.abs(a.beta - b.beta);
+  return Math.sqrt(dAlpha*dAlpha + dBeta*dBeta);
+}
+
+function blurScoreFromImageData(imgData) {
+  // Variance of Laplacian (approx). Take a small sample for speed.
+  const d = imgData.data, W = imgData.width, H = imgData.height;
+  let sum = 0, sumSq = 0, n = 0;
+  const step = 12;
+  for (let y = step; y < H - step; y += step) {
+    for (let x = step; x < W - step; x += step) {
+      const i = (y*W + x)*4;
+      const c = d[i] + d[i+1] + d[i+2];
+      const up = d[((y-step)*W + x)*4] + d[((y-step)*W + x)*4+1] + d[((y-step)*W + x)*4+2];
+      const dn = d[((y+step)*W + x)*4] + d[((y+step)*W + x)*4+1] + d[((y+step)*W + x)*4+2];
+      const lt = d[(y*W + (x-step))*4] + d[(y*W + (x-step))*4+1] + d[(y*W + (x-step))*4+2];
+      const rt = d[(y*W + (x+step))*4] + d[(y*W + (x+step))*4+1] + d[(y*W + (x+step))*4+2];
+      const lap = (up + dn + lt + rt) - 4 * c;
+      sum += lap; sumSq += lap * lap; n++;
+    }
+  }
+  const mean = sum / n;
+  const variance = sumSq / n - mean * mean;
+  return variance;
+}
+
+function drawRing() {
+  const w = ring.width, h = ring.height, cx = w/2, cy = h/2, r = 80;
+  ringCtx.clearRect(0, 0, w, h);
+  // base ring
+  ringCtx.strokeStyle = 'rgba(255,255,255,0.18)';
+  ringCtx.lineWidth = 14;
+  ringCtx.beginPath(); ringCtx.arc(cx, cy, r, 0, Math.PI*2); ringCtx.stroke();
+  // covered cells
+  ringCtx.strokeStyle = 'rgba(31,79,255,0.92)';
+  for (const idx of coverage) {
+    const yawBin = Math.floor(idx / 3);
+    const a0 = (yawBin / 8) * Math.PI*2 - Math.PI/2;
+    const a1 = ((yawBin+1) / 8) * Math.PI*2 - Math.PI/2;
+    ringCtx.beginPath(); ringCtx.arc(cx, cy, r, a0, a1); ringCtx.stroke();
+  }
+  // current direction arrow
+  const cur = (((currentOri.alpha % 360) + 360) % 360);
+  const ang = (cur / 360) * Math.PI*2 - Math.PI/2;
+  ringCtx.fillStyle = '#fff';
+  ringCtx.beginPath();
+  ringCtx.arc(cx + Math.cos(ang)*r, cy + Math.sin(ang)*r, 8, 0, Math.PI*2);
+  ringCtx.fill();
+}
+
+async function startCapture() {
+  // Permissions
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    try {
+      const s = await DeviceOrientationEvent.requestPermission();
+      if (s !== 'granted') { alert('Sans capteurs, pas de capture guidée.'); return; }
+    } catch (e) { alert('Capteurs refusés : ' + e.message); return; }
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' },
+               width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: false,
+    });
+  } catch (e) {
+    alert('Caméra refusée : ' + e.message); return;
+  }
+  video.srcObject = stream;
+  await video.play();
+
+  permPrompt.style.display = 'none';
+  controls.style.display = 'flex';
+  inst.textContent = 'Tourne sur toi-même lentement pour couvrir la pièce';
+
+  window.addEventListener('deviceorientation', e => {
+    currentOri = { alpha: e.alpha || 0, beta: e.beta || 0, gamma: e.gamma || 0 };
+  });
+  requestAnimationFrame(loop);
+}
+
+function loop(t) {
+  drawRing();
+  // Update coverage based on current ori
+  const cell = cellIndex(currentOri.alpha, currentOri.beta);
+  // We mark a cell as "covered" only when we actually capture a frame there.
+  // (display only shows captured cells)
+  coverPctEl.textContent = `${Math.round(coverage.size / COVERAGE_CELLS * 100)}%`;
+  const dt = t - lastFrameTime;
+  // Capture cadence: at least 400ms apart + sufficient angular delta + not blurry
+  if (captured.length < TARGET_FRAMES && dt > 400) {
+    const delta = angularDistance(currentOri, lastCaptureOri);
+    if (lastCaptureOri === null || delta > 12) {
+      tryCapture();
+      lastFrameTime = t;
+    }
+  }
+  if (captured.length >= TARGET_FRAMES) {
+    inst.textContent = '✅ Capture complète, tu peux exporter';
+  } else if (coverage.size > 0 && coverage.size % 4 === 0) {
+    inst.textContent = `${captured.length} / ${TARGET_FRAMES} frames — continue à tourner`;
+  }
+  requestAnimationFrame(loop);
+}
+
+function tryCapture() {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw) return;
+  canvasFrame.width = vw; canvasFrame.height = vh;
+  ctxFrame.drawImage(video, 0, 0, vw, vh);
+  // Blur check on a downsampled grab
+  const smallW = 160, smallH = Math.round(vh * 160 / vw);
+  const tmp = document.createElement('canvas');
+  tmp.width = smallW; tmp.height = smallH;
+  tmp.getContext('2d').drawImage(video, 0, 0, smallW, smallH);
+  const imgData = tmp.getContext('2d').getImageData(0, 0, smallW, smallH);
+  const blur = blurScoreFromImageData(imgData);
+  lastBlurScore = blur;
+  blurWarn.classList.toggle('on', blur < 100);
+  if (blur < 100) return;   // skip blurry frames
+  // Capture full-res JPEG
+  canvasFrame.toBlob(blob => {
+    if (!blob) return;
+    const idx = captured.length;
+    const ori = { ...currentOri };
+    // Thumbnail dataURL for the strip
+    const thumb = tmp.toDataURL('image/jpeg', 0.5);
+    captured.push({ idx, ori, blob, thumb, ts: Date.now() });
+    const cell = cellIndex(ori.alpha, ori.beta);
+    coverage.add(cell);
+    frameCountEl.textContent = captured.length;
+    const im = new Image();
+    im.src = thumb; im.title = `α=${ori.alpha.toFixed(0)} β=${ori.beta.toFixed(0)}`;
+    frameStrip.appendChild(im);
+    frameStrip.scrollLeft = frameStrip.scrollWidth;
+    exportBtn.disabled = captured.length < 8;
+    exportBtn.textContent = `📤 Exporter (${captured.length} frames)`;
+  }, 'image/jpeg', 0.85);
+}
+
+resetBtn.onclick = () => {
+  captured.length = 0;
+  coverage.clear();
+  lastCaptureOri = null;
+  frameStrip.innerHTML = '';
+  frameCountEl.textContent = '0';
+  coverPctEl.textContent = '0%';
+  exportBtn.disabled = true;
+  exportBtn.textContent = '📤 Exporter (0 frames)';
+  inst.textContent = 'Recommence à tourner';
+};
+
+exportBtn.onclick = async () => {
+  exportBtn.disabled = true;
+  exportBtn.textContent = 'Préparation du ZIP…';
+  const zip = new JSZip();
+  const poses = [];
+  for (const f of captured) {
+    const name = `frame_${String(f.idx).padStart(4, '0')}.jpg`;
+    zip.file(name, f.blob);
+    poses.push({ frame: name, alpha: f.ori.alpha, beta: f.ori.beta, gamma: f.ori.gamma, ts: f.ts });
+  }
+  zip.file('poses.json', JSON.stringify({
+    device: navigator.userAgent,
+    capturedAt: new Date().toISOString(),
+    frames: poses,
+  }, null, 2));
+  const blob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `immo3d-capture-${Date.now()}.zip`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  exportBtn.textContent = `📤 Exporter (${captured.length} frames)`;
+  exportBtn.disabled = false;
+};
+
+document.getElementById('permBtn').onclick = startCapture;
+</script>
+</body>
+</html>
