@@ -103,6 +103,7 @@ viewer.addSplatScene('./maison-hq.ksplat', {
 function resetCamera() {
   viewer.camera.position.copy(initialPos);
   viewer.camera.lookAt(sceneCenter);
+  yawPitchInit = false;
   if (viewer.controls && viewer.controls.target) {
     viewer.controls.target.copy(sceneCenter);
     viewer.controls.update?.();
@@ -261,11 +262,20 @@ addEventListener('keyup', e => {
   if (['q','a','d','ArrowLeft','ArrowRight'].includes(e.key)) move.right = 0;
 });
 
+// Maintain explicit yaw/pitch state. Reading & rewriting Euler from the
+// quaternion accumulates roll due to floating-point drift, which looks like
+// the camera "barrel-rolling" on every drag.
+let yaw = 0, pitch = 0, yawPitchInit = false;
 function applyLook(dyaw, dpitch) {
-  const e = new THREE.Euler().setFromQuaternion(viewer.camera.quaternion, 'YXZ');
-  e.y -= dyaw;
-  e.x -= dpitch;
-  e.x = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, e.x));
+  if (!yawPitchInit) {
+    const e0 = new THREE.Euler().setFromQuaternion(viewer.camera.quaternion, 'YXZ');
+    yaw = e0.y; pitch = e0.x; yawPitchInit = true;
+  }
+  yaw -= dyaw;
+  pitch -= dpitch;
+  pitch = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, pitch));
+  // Roll explicitly = 0 → no barrel-roll. YXZ matches our cameraUp=[0,-1,0].
+  const e = new THREE.Euler(pitch, yaw, 0, 'YXZ');
   viewer.camera.quaternion.setFromEuler(e);
 }
 
