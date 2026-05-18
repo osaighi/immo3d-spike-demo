@@ -117,12 +117,27 @@ let mode = 'orbit';
 let joystickInstance = null;
 const move = { fwd: 0, right: 0 };
 
+// Aggressively neutralise mkkellogg's controls in walk mode: replace its
+// update() with a no-op AND set enabled=false. Restore in orbit mode.
+let _origUpdate = null;
+function neutraliseControls(neutralise) {
+  if (!viewer.controls) return;
+  viewer.controls.enabled = !neutralise;
+  if (neutralise && !_origUpdate) {
+    _origUpdate = viewer.controls.update?.bind(viewer.controls);
+    viewer.controls.update = () => {};
+  } else if (!neutralise && _origUpdate) {
+    viewer.controls.update = _origUpdate;
+    _origUpdate = null;
+  }
+}
+
 function setMode(m) {
   mode = m;
   document.body.classList.toggle('walk', m === 'walk');
   orbitBtn.classList.toggle('on', m === 'orbit');
   walkBtn.classList.toggle('on', m === 'walk');
-  if (viewer.controls) viewer.controls.enabled = (m === 'orbit');
+  neutraliseControls(m === 'walk');
 
   if (m === 'walk') {
     help.classList.remove('fade');
@@ -213,6 +228,26 @@ document.addEventListener('mousemove', e => {
 }, { capture: true });
 document.addEventListener('mouseup', () => mDown = false, { capture: true });
 
+// Pointer events — modern browsers (including iOS Safari) fire these too.
+// mkkellogg may listen to these specifically; we capture-block them.
+let pDown = false, pLX = 0, pLY = 0, pId = null;
+document.addEventListener('pointerdown', e => {
+  if (mode !== 'walk' || inJoystick(e.clientX, e.clientY)) return;
+  pDown = true; pId = e.pointerId; pLX = e.clientX; pLY = e.clientY;
+  e.stopImmediatePropagation();
+}, { capture: true });
+document.addEventListener('pointermove', e => {
+  if (!pDown || mode !== 'walk' || e.pointerId !== pId) return;
+  applyLook((e.clientX - pLX) * 0.005, (e.clientY - pLY) * 0.005);
+  pLX = e.clientX; pLY = e.clientY;
+  e.stopImmediatePropagation();
+}, { capture: true });
+function pEnd(e) {
+  if (e.pointerId === pId) { pDown = false; pId = null; if (mode === 'walk') e.stopImmediatePropagation(); }
+}
+document.addEventListener('pointerup', pEnd, { capture: true });
+document.addEventListener('pointercancel', pEnd, { capture: true });
+
 // Keyboard
 addEventListener('keydown', e => {
   if (mode !== 'walk') return;
@@ -232,14 +267,6 @@ function applyLook(dyaw, dpitch) {
   e.x -= dpitch;
   e.x = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, e.x));
   viewer.camera.quaternion.setFromEuler(e);
-  // Re-anchor the (disabled but still-updated) OrbitControls target to a
-  // point 1m ahead of the new look direction so its update() doesn't rotate
-  // the camera back.
-  if (viewer.controls && viewer.controls.target) {
-    const fwd = new THREE.Vector3();
-    viewer.camera.getWorldDirection(fwd);
-    viewer.controls.target.copy(viewer.camera.position).addScaledVector(fwd, 1);
-  }
 }
 
 let lastT = performance.now();
@@ -253,11 +280,6 @@ function tick(t) {
     tmp.copy(dir).multiplyScalar(move.fwd * speed * dt);
     tmp.addScaledVector(right, move.right * speed * dt);
     viewer.camera.position.add(tmp);
-    // Drag the controls target along so OrbitControls.update() doesn't
-    // re-orient the camera every frame.
-    if (viewer.controls && viewer.controls.target) {
-      viewer.controls.target.add(tmp);
-    }
   }
   requestAnimationFrame(tick);
 }
