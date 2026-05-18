@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<title>Immo3D — Visite Street View</title>
+<style>
+  * { box-sizing: border-box; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+  html, body { margin:0; height:100%; background:#000; color:#fff;
+               font-family:-apple-system,system-ui,sans-serif; overflow:hidden;
+               overscroll-behavior:none }
+  #stage { position:fixed; inset:0 }
+  #stage canvas { width:100%; height:100%; display:block; touch-action:none }
+  #hud { position:fixed; top:max(12px,env(safe-area-inset-top)); left:12px;
+         padding:8px 12px; background:rgba(0,0,0,.55); border-radius:8px;
+         font-size:12px; backdrop-filter:blur(8px); pointer-events:none; z-index:10 }
+  #counter { position:fixed; top:max(12px,env(safe-area-inset-top)); right:12px;
+             padding:8px 14px; background:rgba(0,0,0,.55); border-radius:8px;
+             font-size:13px; font-weight:600; backdrop-filter:blur(8px); z-index:10 }
+  .navbtn { position:fixed; bottom:max(20px,env(safe-area-inset-bottom));
+            width:70px; height:70px; border-radius:35px;
+            background:rgba(31,79,255,.95); color:#fff; border:0;
+            font-size:32px; font-family:inherit;
+            box-shadow:0 6px 20px rgba(0,0,0,.5);
+            display:flex; align-items:center; justify-content:center;
+            cursor:pointer; z-index:20 }
+  #prev { left:20px } #next { right:20px }
+  #help { position:fixed; bottom:max(100px,calc(env(safe-area-inset-bottom)+100px));
+          left:50%; transform:translateX(-50%); padding:8px 14px;
+          background:rgba(0,0,0,.75); color:#fff; border-radius:8px;
+          font-size:12px; backdrop-filter:blur(8px); pointer-events:none;
+          transition: opacity 0.5s; z-index:10; text-align:center; max-width:90vw }
+  #help.fade { opacity:0 }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="hud">Loading…</div>
+<div id="counter">1 / 6</div>
+<button class="navbtn" id="prev">‹</button>
+<button class="navbtn" id="next">›</button>
+<div id="help">👆 drag = regarder à 360° · ‹ › = pièce précédente / suivante</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js",
+  "gaussian-splats-3d": "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.7/build/gaussian-splats-3d.module.js"
+}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import * as GS from 'gaussian-splats-3d';
+
+const hud = document.getElementById('hud');
+const help = document.getElementById('help');
+const counter = document.getElementById('counter');
+const stage = document.getElementById('stage');
+
+const viewer = new GS.Viewer({
+  rootElement: stage,
+  cameraUp: [0, -1, 0],
+  sharedMemoryForWorkers: false,
+  selfDrivenMode: true,
+});
+
+let positions = [];
+let currentIdx = 0;
+let yaw = 0, pitch = 0;
+
+// Neutralise mkkellogg's OrbitControls — we drive the camera ourselves.
+let _origUpdate = null;
+function neutralise() {
+  if (!viewer.controls || _origUpdate) return;
+  viewer.controls.enabled = false;
+  _origUpdate = viewer.controls.update?.bind(viewer.controls);
+  viewer.controls.update = () => {};
+}
+
+hud.textContent = 'Loading 6.9 MB…';
+viewer.addSplatScene('./maison-hq.ksplat', {
+  format: GS.SceneFormat.KSplat,
+  progressiveLoad: true,
+}).then(() => {
+  neutralise();
+  // Compute reasonable bubble positions from the splat's bounding box.
+  // For a real product, these would come from the source camera poses.
+  const scene = viewer.getSplatScene(0);
+  const box = new THREE.Box3();
+  if (scene && scene.geometry && scene.geometry.boundingBox) {
+    box.copy(scene.geometry.boundingBox);
+  } else {
+    box.set(new THREE.Vector3(-2, -2, -2), new THREE.Vector3(2, 2, 2));
+  }
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  // 6 bubbles along the longest horizontal axis (X or Z), at mid-Y (eye level).
+  const longAxis = size.x > size.z ? 'x' : 'z';
+  const N = 6;
+  for (let i = 0; i < N; i++) {
+    const p = center.clone();
+    const t = (i + 0.5) / N - 0.5;  // -0.5 .. 0.5
+    p[longAxis] += t * size[longAxis] * 0.6;   // 60% spread along axis
+    positions.push(p);
+  }
+  goTo(Math.floor(N / 2));   // start in the middle of the apartment
+  hud.textContent = 'Visite immersive';
+  setTimeout(() => help.classList.add('fade'), 6000);
+  viewer.start();
+}).catch(e => {
+  hud.textContent = 'Erreur : ' + e.message;
+  console.error(e);
+});
+
+function goTo(idx) {
+  currentIdx = Math.max(0, Math.min(positions.length - 1, idx));
+  viewer.camera.position.copy(positions[currentIdx]);
+  // Default look = look toward the next bubble (or scene center for last)
+  const lookAt = positions[currentIdx + 1] || positions[currentIdx - 1] || new THREE.Vector3(0,0,0);
+  viewer.camera.lookAt(lookAt);
+  const e = new THREE.Euler().setFromQuaternion(viewer.camera.quaternion, 'YXZ');
+  yaw = e.y; pitch = e.x;
+  counter.textContent = `${currentIdx + 1} / ${positions.length}`;
+}
+
+document.getElementById('prev').onclick = () => goTo(currentIdx - 1);
+document.getElementById('next').onclick = () => goTo(currentIdx + 1);
+
+// Look around: drag (touch/mouse/pointer) — capture phase to beat mkkellogg
+function applyLook(dyaw, dpitch) {
+  yaw -= dyaw;
+  pitch -= dpitch;
+  pitch = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, pitch));
+  const e = new THREE.Euler(pitch, yaw, 0, 'YXZ');
+  viewer.camera.quaternion.setFromEuler(e);
+}
+
+let pDown = false, pId = null, lx = 0, ly = 0;
+function onDown(x, y, id) {
+  pDown = true; pId = id ?? 'mouse'; lx = x; ly = y;
+}
+function onMove(x, y, id) {
+  if (!pDown || (id ?? 'mouse') !== pId) return false;
+  applyLook((x - lx) * 0.005, (y - ly) * 0.005);
+  lx = x; ly = y;
+  return true;
+}
+function onUp(id) {
+  if ((id ?? 'mouse') === pId) { pDown = false; pId = null; }
+}
+
+// Pointer events (modern)
+document.addEventListener('pointerdown', e => {
+  // Skip if clicking a button
+  if (e.target.closest('button')) return;
+  onDown(e.clientX, e.clientY, e.pointerId);
+  e.stopImmediatePropagation();
+}, { capture: true });
+document.addEventListener('pointermove', e => {
+  if (onMove(e.clientX, e.clientY, e.pointerId)) e.stopImmediatePropagation();
+}, { capture: true });
+document.addEventListener('pointerup', e => { onUp(e.pointerId); }, { capture: true });
+document.addEventListener('pointercancel', e => { onUp(e.pointerId); }, { capture: true });
+
+// Touch events fallback
+document.addEventListener('touchstart', e => {
+  if (e.target.closest('button')) return;
+  const t = e.changedTouches[0];
+  onDown(t.clientX, t.clientY, t.identifier);
+  e.preventDefault(); e.stopImmediatePropagation();
+}, { capture: true, passive: false });
+document.addEventListener('touchmove', e => {
+  for (const t of e.changedTouches) {
+    if (onMove(t.clientX, t.clientY, t.identifier)) {
+      e.preventDefault(); e.stopImmediatePropagation();
+    }
+  }
+}, { capture: true, passive: false });
+document.addEventListener('touchend', e => { for (const t of e.changedTouches) onUp(t.identifier); }, { capture: true });
+document.addEventListener('touchcancel', e => { for (const t of e.changedTouches) onUp(t.identifier); }, { capture: true });
+
+// Keyboard
+addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === 'd') goTo(currentIdx + 1);
+  if (e.key === 'ArrowLeft' || e.key === 'q' || e.key === 'a') goTo(currentIdx - 1);
+});
+</script>
+</body>
+</html>
