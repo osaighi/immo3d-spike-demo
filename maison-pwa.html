@@ -34,7 +34,7 @@ const viewer = new GS.Viewer({
   cameraUp: [0, -1, 0],
   sharedMemoryForWorkers: false,
 });
-viewer.addSplatScene('./maison-pwa.ksplat', { format: GS.SceneFormat.KSplat, progressiveLoad: true })
+viewer.addSplatScene('./maison-pwa.ksplat?v=370k', { format: GS.SceneFormat.KSplat, progressiveLoad: true })
   .then(() => { hud.textContent = 'PWA capture (20 frames) → InstantSplat 2k iters → 8.6 MB · 370k splats · drag = orbiter'; viewer.start(); })
   .catch(e => { hud.textContent = 'Erreur : ' + e.message; });
 </script>
