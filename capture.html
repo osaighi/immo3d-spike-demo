@@ -155,12 +155,15 @@ function drawRing() {
   ringCtx.strokeStyle = 'rgba(255,255,255,0.18)';
   ringCtx.lineWidth = 14;
   ringCtx.beginPath(); ringCtx.arc(cx, cy, r, 0, Math.PI*2); ringCtx.stroke();
-  // covered cells
-  ringCtx.strokeStyle = 'rgba(31,79,255,0.92)';
-  for (const idx of coverage) {
-    const yawBin = Math.floor(idx / 3);
-    const a0 = (yawBin / 8) * Math.PI*2 - Math.PI/2;
-    const a1 = ((yawBin+1) / 8) * Math.PI*2 - Math.PI/2;
+  // yaw bins covered (blue) vs missing (red)
+  const yawCovered = new Set();
+  for (const idx of coverage) yawCovered.add(Math.floor(idx / 3));
+  for (let yawBin = 0; yawBin < 8; yawBin++) {
+    const a0 = (yawBin / 8) * Math.PI*2 - Math.PI/2 + 0.02;
+    const a1 = ((yawBin+1) / 8) * Math.PI*2 - Math.PI/2 - 0.02;
+    ringCtx.strokeStyle = yawCovered.has(yawBin)
+      ? 'rgba(31,79,255,0.92)'
+      : 'rgba(220,30,40,0.55)';
     ringCtx.beginPath(); ringCtx.arc(cx, cy, r, a0, a1); ringCtx.stroke();
   }
   // current direction arrow
@@ -213,17 +216,24 @@ function loop(t) {
   coverPctEl.textContent = `${Math.round(coverage.size / COVERAGE_CELLS * 100)}%`;
   const dt = t - lastFrameTime;
   // Capture cadence: at least 400ms apart + sufficient angular delta + not blurry
-  if (captured.length < TARGET_FRAMES && dt > 400) {
+  const yawCov = new Set([...coverage].map(i => Math.floor(i/3))).size;
+  if ((captured.length < TARGET_FRAMES || yawCov < 8) && captured.length < 60 && dt > 400) {
     const delta = angularDistance(currentOri, lastCaptureOri);
     if (lastCaptureOri === null || delta > 12) {
       tryCapture();
       lastFrameTime = t;
     }
   }
-  if (captured.length >= TARGET_FRAMES) {
-    inst.textContent = '✅ Capture complète, tu peux exporter';
-  } else if (coverage.size > 0 && coverage.size % 4 === 0) {
-    inst.textContent = `${captured.length} / ${TARGET_FRAMES} frames — continue à tourner`;
+  // Completion = 30 frames AND all 8 yaw bins covered
+  const yawCovered = new Set();
+  for (const idx of coverage) yawCovered.add(Math.floor(idx / 3));
+  if (captured.length >= TARGET_FRAMES && yawCovered.size === 8) {
+    inst.textContent = '✅ Tour complet, tu peux exporter';
+  } else if (yawCovered.size < 8) {
+    const missing = 8 - yawCovered.size;
+    inst.textContent = `${captured.length} frames · ${missing} secteur(s) à couvrir (zones rouges)`;
+  } else {
+    inst.textContent = `${captured.length} / ${TARGET_FRAMES} frames`;
   }
   requestAnimationFrame(loop);
 }
