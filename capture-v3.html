@@ -133,14 +133,15 @@
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script>
 // =============== Tuning constants ===============
-const MIN_CAPTURE_INTERVAL_MS = 450;
+const MIN_CAPTURE_INTERVAL_MS = 600;
 const ROT_DELTA_DEG = 14;           // capture if rotated by this much
-const STEP_TRIGGER  = 1;            // OR if N steps happened since last capture
+const STEP_TRIGGER  = 3;            // OR if N steps happened since last capture (don't fire on every step)
 const BLUR_THRESHOLD = 90;          // variance of Laplacian threshold (lower = looser)
-const STEP_ACCEL_THRESHOLD = 1.2;   // m/s² delta over running mean to count as step peak
-const STEP_MIN_INTERVAL_MS = 300;   // typical gait: 1.5-3 Hz → min 300 ms between steps
+const STEP_ACCEL_THRESHOLD = 0.7;   // m/s² delta over mean (lower = more sensitive; iPhone steady walk ≈ 0.5-2)
+const STEP_MIN_INTERVAL_MS = 280;   // typical gait: 1.5-3 Hz → min 280 ms between steps
 const WALK_TIMEOUT_MS = 1500;       // considered "stopped" if no step for this long
-const STATION_GAP_STEPS = 3;        // ≥N steps without capture → counts as a new "zone"
+const ZONE_GAP_STEPS = 3;           // ≥N steps in the gap between two captures → new zone
+const ZONE_GAP_MS    = 3500;        // OR ≥X ms between captures → new zone (fallback if no step detection)
 const TARGET_FRAMES = 40;
 const TARGET_ZONES  = 3;
 const COVERAGE_BINS = 12;           // yaw bins for radar
@@ -172,7 +173,6 @@ let captures = [];    // [{idx, station, ori, ts, blob, thumb, stepCount}]
 let currentOri = { alpha:0, beta:0, gamma:0 };
 let lastCaptureTime = 0;
 let lastCaptureOri = null;
-let lastCaptureStep = 0;
 let coverageBins = new Set();
 
 // Step detection
@@ -182,11 +182,12 @@ let accelMean = 9.81;             // running mean of accel magnitude
 let accelEMAalpha = 0.05;         // slow decay
 let lastWalkTs = 0;
 let aboveThreshold = false;       // hysteresis state for peak detection
+let motionGranted = false;        // did the OS give us motion events?
+let motionEventsReceived = 0;     // # of motion events ever received
 
 // "Zones" = implicit stations, server uses this to group keyframes
 let currentZone = 0;
 let stepsSinceLastCapture = 0;
-let stepsSinceLastZoneAdvance = 0;
 
 let lastHintChange = 0;
 let currentHintKey = 'walk';
@@ -263,6 +264,7 @@ function drawRadar() {
 
 // =============== Step detection (DeviceMotion) ===============
 function onMotion(e) {
+  motionEventsReceived++;
   if (phase !== 'capturing') return;
   const a = e.accelerationIncludingGravity;
   if (!a || a.x === null) return;
@@ -280,8 +282,10 @@ function onMotion(e) {
     lastWalkTs = now;
     stepCount++;
     stepsSinceLastCapture++;
-    stepsSinceLastZoneAdvance++;
     stepCountEl.textContent = stepCount;
+    // Visual feedback: flash the walk indicator each step
+    walkPulse.classList.add('on');
+    walkLabel.textContent = 'pas !';
   } else if (delta < STEP_ACCEL_THRESHOLD * 0.4) {
     aboveThreshold = false;
   }
@@ -301,8 +305,13 @@ async function startCapture() {
       typeof DeviceMotionEvent.requestPermission === 'function') {
     try {
       const s = await DeviceMotionEvent.requestPermission();
-      if (s !== 'granted') { alert('Sans capteur de mouvement, détection des pas indisponible.'); }
-    } catch (e) { /* non-blocking */ }
+      motionGranted = (s === 'granted');
+      if (!motionGranted) {
+        alert('Détection des pas désactivée. Les zones seront détectées via le temps écoulé entre captures (moins précis).');
+      }
+    } catch (e) { motionGranted = false; }
+  } else {
+    motionGranted = true; // assume non-iOS browsers don't gate motion
   }
 
   // 2) Camera
@@ -329,21 +338,33 @@ async function startCapture() {
   requestAnimationFrame(loop);
 }
 
-function maybeAdvanceZone() {
-  // If we've taken ≥STATION_GAP_STEPS steps WITHOUT capturing, the user
-  // walked between distinct viewpoints → mark next captures as new zone.
-  if (stepsSinceLastZoneAdvance >= STATION_GAP_STEPS) {
+function maybeAdvanceZoneAtCapture(now) {
+  // A "zone change" = a gap between two captures that's BIG.
+  // Two signals:
+  //   - ≥ZONE_GAP_STEPS steps happened in the gap (user walked between viewpoints)
+  //   - OR ≥ZONE_GAP_MS elapsed (fallback when step detection unavailable)
+  if (lastCaptureOri === null) return; // first capture: stay zone 0
+  const gapMs = now - lastCaptureTime;
+  const gapSteps = stepsSinceLastCapture;
+  if (gapSteps >= ZONE_GAP_STEPS || gapMs >= ZONE_GAP_MS) {
     currentZone++;
-    stepsSinceLastZoneAdvance = 0;
     zoneCountEl.textContent = currentZone + 1;
-    showToast(`Nouvelle zone détectée (${currentZone + 1})`, 'good', 1200);
+    showToast(`Nouvelle zone (${currentZone + 1}) · +${gapSteps} pas`, 'good', 1300);
+    // Reset coverage radar so user re-covers from this new viewpoint
+    coverageBins.clear();
   }
 }
 
+let warnedNoMotion = false;
 function updateWalkLabel(now) {
   const walking = (now - lastWalkTs) < WALK_TIMEOUT_MS;
   walkPulse.classList.toggle('on', walking);
   walkLabel.textContent = walking ? 'marche' : 'immobile';
+  // If 15s passed, ≥10 frames captured, but 0 motion events ever → permission silently denied
+  if (!warnedNoMotion && captures.length >= 10 && motionEventsReceived === 0) {
+    warnedNoMotion = true;
+    showToast('⚠ Capteurs de mouvement inactifs — zones basées sur le temps', 'warn', 4000);
+  }
 }
 
 function updateHint(now) {
@@ -377,15 +398,14 @@ function loop(t) {
       rotDelta > ROT_DELTA_DEG ||
       stepDelta >= STEP_TRIGGER;
     if (should) {
-      maybeAdvanceZone();
-      tryCapture();
-      lastCaptureTime = t;
+      maybeAdvanceZoneAtCapture(t);
+      tryCapture(t);
     }
   }
   requestAnimationFrame(loop);
 }
 
-function tryCapture() {
+function tryCapture(now) {
   const vw = video.videoWidth, vh = video.videoHeight;
   if (!vw) return;
   canvasFrame.width = vw; canvasFrame.height = vh;
@@ -400,6 +420,14 @@ function tryCapture() {
     return;
   }
 
+  // Snapshot the gap metadata BEFORE we reset the counters, so the stored
+  // frame remembers how "far" it was from the previous one (server uses
+  // this to know which frames belong to the same viewpoint cluster).
+  const gapSteps = stepsSinceLastCapture;
+  const gapMs = lastCaptureTime > 0 ? (now - lastCaptureTime) : 0;
+  lastCaptureTime = now;
+  stepsSinceLastCapture = 0;
+
   canvasFrame.toBlob(blob => {
     if (!blob) return;
     const ori = { ...currentOri };
@@ -407,12 +435,11 @@ function tryCapture() {
     const item = {
       idx: captures.length, station: currentZone,
       ori, blob, thumb, ts: Date.now(),
-      stepCount, stepsSinceLastCapture,
+      stepCount, gapSteps, gapMs,
     };
     captures.push(item);
     lastCaptureOri = { ...ori };
     coverageBins.add(yawBin(ori.alpha));
-    stepsSinceLastCapture = 0;
 
     frameCountEl.textContent = captures.length;
     const im = new Image();
@@ -446,7 +473,7 @@ resetBtn.onclick = () => {
   captures.length = 0;
   coverageBins.clear();
   currentZone = 0; stepCount = 0;
-  stepsSinceLastCapture = 0; stepsSinceLastZoneAdvance = 0;
+  stepsSinceLastCapture = 0;
   lastCaptureOri = null; lastCaptureTime = 0;
   frameStrip.innerHTML = '';
   frameCountEl.textContent = '0';
@@ -469,7 +496,7 @@ async function exportZip() {
     poses.push({
       frame: name, idx: f.idx, zone: f.station,
       alpha: f.ori.alpha, beta: f.ori.beta, gamma: f.ori.gamma,
-      step_count: f.stepCount, steps_since_last: f.stepsSinceLastCapture,
+      step_count: f.stepCount, gap_steps: f.gapSteps, gap_ms: f.gapMs,
       ts: f.ts,
     });
   }
@@ -480,8 +507,10 @@ async function exportZip() {
     n_frames: captures.length,
     n_zones: currentZone + 1,
     total_steps: stepCount,
+    motion_granted: motionGranted,
+    motion_events_received: motionEventsReceived,
     tuning: { ROT_DELTA_DEG, STEP_TRIGGER, BLUR_THRESHOLD,
-              STATION_GAP_STEPS, STEP_ACCEL_THRESHOLD },
+              ZONE_GAP_STEPS, ZONE_GAP_MS, STEP_ACCEL_THRESHOLD },
     frames: poses,
   }, null, 2));
   const blob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
