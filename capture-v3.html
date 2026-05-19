@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<title>Immo3D — Capture naturelle v3</title>
+<style>
+  * { box-sizing: border-box; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+  html, body { margin:0; height:100%; background:#000; color:#fff;
+               font-family:-apple-system,system-ui,sans-serif; overflow:hidden;
+               overscroll-behavior:none }
+  #video, #canvasFrame { position:fixed; inset:0; width:100%; height:100%;
+                         object-fit:cover; touch-action:none }
+  #canvasFrame { display:none }
+
+  /* Tap hint at top */
+  #status { position:fixed; top:max(14px,env(safe-area-inset-top)); left:14px;
+            right:14px; padding:10px 14px; background:rgba(0,0,0,.55);
+            border-radius:12px; backdrop-filter:blur(10px);
+            pointer-events:none; z-index:10;
+            display:flex; justify-content:space-between; align-items:center;
+            font-size:13px }
+  #status .left { display:flex; gap:14px; align-items:center }
+  #status .badge { padding:2px 8px; background:rgba(31,79,255,.85);
+                   border-radius:6px; font-weight:600; font-size:11px }
+  #status .pulse { width:8px; height:8px; border-radius:4px; background:#fff;
+                   box-shadow:0 0 8px #fff; opacity:.3; transition:opacity .2s }
+  #status .pulse.on { opacity:1; background:#5aff8a; box-shadow:0 0 10px #5aff8a }
+
+  /* Center instruction (large, ephemeral) */
+  #bigHint { position:fixed; top:30%; left:0; right:0; text-align:center;
+             font-size:22px; font-weight:600; line-height:1.3;
+             text-shadow:0 2px 12px rgba(0,0,0,.95); padding:0 24px;
+             pointer-events:none; z-index:10;
+             transition:opacity .35s, transform .35s }
+  #bigHint .sub { display:block; margin-top:8px; font-size:14px;
+                  font-weight:400; opacity:.85 }
+  #bigHint.fade { opacity:0; transform:translateY(-10px) }
+
+  /* Live coverage radar at bottom-right */
+  #radar { position:fixed; right:18px;
+           bottom:max(110px,calc(env(safe-area-inset-bottom)+110px));
+           width:92px; height:92px; opacity:.85; z-index:10;
+           pointer-events:none }
+
+  /* Frames strip */
+  #frameStrip { position:fixed;
+                bottom:max(110px,calc(env(safe-area-inset-bottom)+110px));
+                left:0; right:120px; height:56px; padding:6px 12px;
+                overflow-x:auto; overflow-y:hidden; white-space:nowrap; z-index:10;
+                background:linear-gradient(180deg, transparent, rgba(0,0,0,.4)) }
+  #frameStrip img { height:44px; margin-right:3px; border-radius:4px;
+                    border:1px solid rgba(255,255,255,.25); vertical-align:top }
+
+  /* Bottom CTA */
+  #controls { position:fixed; bottom:max(20px,env(safe-area-inset-bottom));
+              left:0; right:0; display:flex; justify-content:center; gap:12px;
+              z-index:20; padding:0 18px }
+  .btn { padding:14px 22px; color:#fff; border:0; border-radius:14px;
+         font-size:15px; font-weight:600; font-family:inherit;
+         backdrop-filter:blur(10px); cursor:pointer; min-height:54px;
+         box-shadow:0 6px 20px rgba(0,0,0,.5) }
+  .btn.primary { background:rgba(31,79,255,.95); padding:16px 26px; font-size:16px;
+                 flex:1; max-width:320px }
+  .btn.secondary { background:rgba(0,0,0,.65); padding:14px 16px; font-size:13px }
+  .btn.success { background:rgba(40,180,80,.95) }
+  .btn:disabled { opacity:.5; box-shadow:none }
+
+  /* Permission splash */
+  #permPrompt { position:fixed; inset:0; background:rgba(0,0,0,.95);
+                display:flex; align-items:center; justify-content:center;
+                padding:40px 22px; z-index:30; text-align:center }
+  #permPrompt h1 { font-size:24px; margin:0 0 14px; font-weight:600 }
+  #permPrompt p { font-size:15px; line-height:1.5; opacity:.88; margin:0 0 20px;
+                  max-width:380px }
+  #permPrompt .small { font-size:12px; opacity:.55; margin-top:14px }
+
+  /* Toasts */
+  #toast { position:fixed; top:50%; left:50%;
+           transform:translate(-50%,calc(-50% + 160px));
+           padding:8px 14px; background:rgba(0,0,0,.85);
+           border-radius:10px; font-size:13px; z-index:15;
+           opacity:0; transition:opacity .25s; pointer-events:none }
+  #toast.on { opacity:1 }
+  #toast.warn { background:rgba(220,60,40,.92) }
+  #toast.good { background:rgba(40,180,80,.92) }
+</style>
+</head>
+<body>
+
+<div id="permPrompt">
+  <div>
+    <h1>📱 Capture naturelle</h1>
+    <p>Marche dans ton bien en filmant ce qui t'intéresse — je m'occupe du reste.<br><br>
+       <b>Pas de boutons à appuyer</b> pendant la capture : tourne, déplace-toi, l'app sélectionne automatiquement les bons moments.</p>
+    <button class="btn primary" id="permBtn">Démarrer la capture</button>
+    <p class="small">Caméra + capteurs de mouvement requis.<br>
+       Aucune donnée n'est envoyée pendant la capture.</p>
+  </div>
+</div>
+
+<video id="video" autoplay playsinline muted></video>
+<canvas id="canvasFrame"></canvas>
+
+<div id="status">
+  <div class="left">
+    <span><b id="frameCount">0</b> frames</span>
+    <span><b id="stepCount">0</b> pas</span>
+    <span><b id="zoneCount">0</b> zones</span>
+  </div>
+  <div class="left">
+    <span class="pulse" id="walkPulse"></span>
+    <span id="walkLabel">immobile</span>
+  </div>
+</div>
+
+<div id="bigHint">
+  Marche dans ton bien
+  <span class="sub">Filme calmement les pièces et leurs détails</span>
+</div>
+
+<canvas id="radar" width="92" height="92"></canvas>
+
+<div id="frameStrip"></div>
+
+<div id="toast"></div>
+
+<div id="controls" style="display:none">
+  <button class="btn secondary" id="resetBtn">↺</button>
+  <button class="btn primary" id="actionBtn">Terminer</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script>
+// =============== Tuning constants ===============
+const MIN_CAPTURE_INTERVAL_MS = 450;
+const ROT_DELTA_DEG = 14;           // capture if rotated by this much
+const STEP_TRIGGER  = 1;            // OR if N steps happened since last capture
+const BLUR_THRESHOLD = 90;          // variance of Laplacian threshold (lower = looser)
+const STEP_ACCEL_THRESHOLD = 1.2;   // m/s² delta over running mean to count as step peak
+const STEP_MIN_INTERVAL_MS = 300;   // typical gait: 1.5-3 Hz → min 300 ms between steps
+const WALK_TIMEOUT_MS = 1500;       // considered "stopped" if no step for this long
+const STATION_GAP_STEPS = 3;        // ≥N steps without capture → counts as a new "zone"
+const TARGET_FRAMES = 40;
+const TARGET_ZONES  = 3;
+const COVERAGE_BINS = 12;           // yaw bins for radar
+const TARGET_BIN_COVER = 8;
+
+// =============== DOM ===============
+const video = document.getElementById('video');
+const canvasFrame = document.getElementById('canvasFrame');
+const ctxFrame = canvasFrame.getContext('2d');
+const radar = document.getElementById('radar');
+const radarCtx = radar.getContext('2d');
+const bigHint = document.getElementById('bigHint');
+const status = document.getElementById('status');
+const frameCountEl = document.getElementById('frameCount');
+const stepCountEl  = document.getElementById('stepCount');
+const zoneCountEl  = document.getElementById('zoneCount');
+const walkPulse    = document.getElementById('walkPulse');
+const walkLabel    = document.getElementById('walkLabel');
+const frameStrip   = document.getElementById('frameStrip');
+const actionBtn    = document.getElementById('actionBtn');
+const resetBtn     = document.getElementById('resetBtn');
+const controls     = document.getElementById('controls');
+const permPrompt   = document.getElementById('permPrompt');
+const toastEl      = document.getElementById('toast');
+
+// =============== State ===============
+let phase = 'idle';   // 'idle' | 'capturing' | 'done'
+let captures = [];    // [{idx, station, ori, ts, blob, thumb, stepCount}]
+let currentOri = { alpha:0, beta:0, gamma:0 };
+let lastCaptureTime = 0;
+let lastCaptureOri = null;
+let lastCaptureStep = 0;
+let coverageBins = new Set();
+
+// Step detection
+let lastStepTs = 0;
+let stepCount = 0;
+let accelMean = 9.81;             // running mean of accel magnitude
+let accelEMAalpha = 0.05;         // slow decay
+let lastWalkTs = 0;
+let aboveThreshold = false;       // hysteresis state for peak detection
+
+// "Zones" = implicit stations, server uses this to group keyframes
+let currentZone = 0;
+let stepsSinceLastCapture = 0;
+let stepsSinceLastZoneAdvance = 0;
+
+let lastHintChange = 0;
+let currentHintKey = 'walk';
+
+// =============== Helpers ===============
+function showToast(msg, kind='', duration=1500) {
+  toastEl.textContent = msg;
+  toastEl.className = 'on ' + kind;
+  setTimeout(() => { toastEl.className = ''; }, duration);
+}
+
+function setHint(key, main, sub='') {
+  if (key === currentHintKey) return;
+  currentHintKey = key;
+  bigHint.classList.add('fade');
+  setTimeout(() => {
+    bigHint.innerHTML = main + (sub ? `<span class="sub">${sub}</span>` : '');
+    bigHint.classList.remove('fade');
+  }, 350);
+}
+
+function yawBin(alpha) {
+  const a = ((alpha % 360) + 360) % 360;
+  return Math.floor(a / 360 * COVERAGE_BINS) % COVERAGE_BINS;
+}
+
+function angularDistance(a, b) {
+  if (!a || !b) return 360;
+  const dA = Math.min(Math.abs(a.alpha - b.alpha), 360 - Math.abs(a.alpha - b.alpha));
+  const dB = Math.abs((a.beta||0) - (b.beta||0));
+  return Math.sqrt(dA*dA + dB*dB);
+}
+
+function blurScore(imgData) {
+  const d = imgData.data, W = imgData.width, H = imgData.height;
+  let sumSq = 0, n = 0; const step = 12;
+  for (let y = step; y < H - step; y += step) {
+    for (let x = step; x < W - step; x += step) {
+      const i = (y*W + x)*4;
+      const c = d[i]+d[i+1]+d[i+2];
+      const up = d[((y-step)*W+x)*4]+d[((y-step)*W+x)*4+1]+d[((y-step)*W+x)*4+2];
+      const dn = d[((y+step)*W+x)*4]+d[((y+step)*W+x)*4+1]+d[((y+step)*W+x)*4+2];
+      const lt = d[(y*W+(x-step))*4]+d[(y*W+(x-step))*4+1]+d[(y*W+(x-step))*4+2];
+      const rt = d[(y*W+(x+step))*4]+d[(y*W+(x+step))*4+1]+d[(y*W+(x+step))*4+2];
+      const lap = (up+dn+lt+rt) - 4*c;
+      sumSq += lap*lap; n++;
+    }
+  }
+  return sumSq / n;
+}
+
+function drawRadar() {
+  const w=radar.width, h=radar.height, cx=w/2, cy=h/2, r=38;
+  radarCtx.clearRect(0,0,w,h);
+  radarCtx.fillStyle = 'rgba(0,0,0,0.45)';
+  radarCtx.beginPath(); radarCtx.arc(cx, cy, r+4, 0, Math.PI*2); radarCtx.fill();
+  radarCtx.strokeStyle = 'rgba(255,255,255,0.2)';
+  radarCtx.lineWidth = 8;
+  radarCtx.beginPath(); radarCtx.arc(cx, cy, r, 0, Math.PI*2); radarCtx.stroke();
+  for (let b = 0; b < COVERAGE_BINS; b++) {
+    if (!coverageBins.has(b)) continue;
+    const a0 = (b/COVERAGE_BINS)*Math.PI*2 - Math.PI/2 + 0.04;
+    const a1 = ((b+1)/COVERAGE_BINS)*Math.PI*2 - Math.PI/2 - 0.04;
+    radarCtx.strokeStyle = 'rgba(31,79,255,0.95)';
+    radarCtx.beginPath(); radarCtx.arc(cx, cy, r, a0, a1); radarCtx.stroke();
+  }
+  // Current heading
+  const ang = (((currentOri.alpha%360)+360)%360)/360*Math.PI*2 - Math.PI/2;
+  radarCtx.fillStyle = '#fff';
+  radarCtx.beginPath();
+  radarCtx.arc(cx + Math.cos(ang)*r, cy + Math.sin(ang)*r, 4.5, 0, Math.PI*2);
+  radarCtx.fill();
+}
+
+// =============== Step detection (DeviceMotion) ===============
+function onMotion(e) {
+  if (phase !== 'capturing') return;
+  const a = e.accelerationIncludingGravity;
+  if (!a || a.x === null) return;
+  const mag = Math.sqrt(a.x*a.x + a.y*a.y + a.z*a.z);
+  // EMA mean (low-pass filter)
+  accelMean = accelMean * (1 - accelEMAalpha) + mag * accelEMAalpha;
+  const delta = mag - accelMean;
+  const now = performance.now();
+
+  // Peak detection with hysteresis + min interval
+  if (delta > STEP_ACCEL_THRESHOLD && !aboveThreshold &&
+      (now - lastStepTs) > STEP_MIN_INTERVAL_MS) {
+    aboveThreshold = true;
+    lastStepTs = now;
+    lastWalkTs = now;
+    stepCount++;
+    stepsSinceLastCapture++;
+    stepsSinceLastZoneAdvance++;
+    stepCountEl.textContent = stepCount;
+  } else if (delta < STEP_ACCEL_THRESHOLD * 0.4) {
+    aboveThreshold = false;
+  }
+}
+
+// =============== Main capture loop ===============
+async function startCapture() {
+  // 1) iOS-style permission for orientation + motion
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    try {
+      const s = await DeviceOrientationEvent.requestPermission();
+      if (s !== 'granted') { alert('Sans capteur d\'orientation, pas de capture.'); return; }
+    } catch (e) { alert('Capteurs orientation: ' + e.message); return; }
+  }
+  if (typeof DeviceMotionEvent !== 'undefined' &&
+      typeof DeviceMotionEvent.requestPermission === 'function') {
+    try {
+      const s = await DeviceMotionEvent.requestPermission();
+      if (s !== 'granted') { alert('Sans capteur de mouvement, détection des pas indisponible.'); }
+    } catch (e) { /* non-blocking */ }
+  }
+
+  // 2) Camera
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' },
+               width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: false,
+    });
+  } catch (e) { alert('Caméra refusée: ' + e.message); return; }
+  video.srcObject = stream; await video.play();
+
+  permPrompt.style.display = 'none';
+  controls.style.display = 'flex';
+  phase = 'capturing';
+  setHint('start', 'Marche dans ton bien', 'Filme calmement les pièces et leurs détails');
+
+  window.addEventListener('deviceorientation', e => {
+    currentOri = { alpha: e.alpha || 0, beta: e.beta || 0, gamma: e.gamma || 0 };
+  });
+  window.addEventListener('devicemotion', onMotion);
+
+  requestAnimationFrame(loop);
+}
+
+function maybeAdvanceZone() {
+  // If we've taken ≥STATION_GAP_STEPS steps WITHOUT capturing, the user
+  // walked between distinct viewpoints → mark next captures as new zone.
+  if (stepsSinceLastZoneAdvance >= STATION_GAP_STEPS) {
+    currentZone++;
+    stepsSinceLastZoneAdvance = 0;
+    zoneCountEl.textContent = currentZone + 1;
+    showToast(`Nouvelle zone détectée (${currentZone + 1})`, 'good', 1200);
+  }
+}
+
+function updateWalkLabel(now) {
+  const walking = (now - lastWalkTs) < WALK_TIMEOUT_MS;
+  walkPulse.classList.toggle('on', walking);
+  walkLabel.textContent = walking ? 'marche' : 'immobile';
+}
+
+function updateHint(now) {
+  if (captures.length === 0) {
+    setHint('start', 'Marche dans ton bien', 'Filme calmement les pièces et leurs détails');
+  } else if (coverageBins.size < 4 && currentZone === 0) {
+    setHint('turn', 'Continue à tourner', 'Couvre toutes les directions');
+  } else if (currentZone === 0 && captures.length >= 10) {
+    setHint('move', 'Déplace-toi de quelques mètres', 'Une autre pièce, ou un autre angle');
+  } else if (captures.length >= TARGET_FRAMES * 0.7 && currentZone + 1 >= TARGET_ZONES) {
+    setHint('done', 'Tu peux terminer quand tu veux', 'Ou continue pour plus de détails');
+    actionBtn.classList.add('success');
+    actionBtn.textContent = `Terminer (${captures.length} frames)`;
+  } else if (captures.length >= 6 && currentZone === 0) {
+    setHint('walk', 'Avance lentement en filmant', 'Vers la prochaine pièce ou angle');
+  }
+}
+
+function loop(t) {
+  if (phase !== 'capturing') return;
+  drawRadar();
+  updateWalkLabel(t);
+  updateHint(t);
+
+  const dt = t - lastCaptureTime;
+  if (dt > MIN_CAPTURE_INTERVAL_MS) {
+    const rotDelta = angularDistance(currentOri, lastCaptureOri);
+    const stepDelta = stepsSinceLastCapture;
+    const should =
+      lastCaptureOri === null ||
+      rotDelta > ROT_DELTA_DEG ||
+      stepDelta >= STEP_TRIGGER;
+    if (should) {
+      maybeAdvanceZone();
+      tryCapture();
+      lastCaptureTime = t;
+    }
+  }
+  requestAnimationFrame(loop);
+}
+
+function tryCapture() {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw) return;
+  canvasFrame.width = vw; canvasFrame.height = vh;
+  ctxFrame.drawImage(video, 0, 0, vw, vh);
+  const tmp = document.createElement('canvas');
+  const sw = 160, sh = Math.round(vh*160/vw);
+  tmp.width = sw; tmp.height = sh;
+  tmp.getContext('2d').drawImage(video, 0, 0, sw, sh);
+  const blur = blurScore(tmp.getContext('2d').getImageData(0, 0, sw, sh));
+  if (blur < BLUR_THRESHOLD) {
+    showToast('⚠ Image floue — bouge plus lentement', 'warn', 800);
+    return;
+  }
+
+  canvasFrame.toBlob(blob => {
+    if (!blob) return;
+    const ori = { ...currentOri };
+    const thumb = tmp.toDataURL('image/jpeg', 0.5);
+    const item = {
+      idx: captures.length, station: currentZone,
+      ori, blob, thumb, ts: Date.now(),
+      stepCount, stepsSinceLastCapture,
+    };
+    captures.push(item);
+    lastCaptureOri = { ...ori };
+    coverageBins.add(yawBin(ori.alpha));
+    stepsSinceLastCapture = 0;
+
+    frameCountEl.textContent = captures.length;
+    const im = new Image();
+    im.src = thumb;
+    im.title = `#${item.idx} z${item.station} α=${ori.alpha.toFixed(0)} step=${stepCount}`;
+    const colors = ['#ff5a5a','#5aff5a','#5aaaff','#ffaa5a','#aa5aff',
+                    '#5affff','#ff5aff','#ffff5a'];
+    im.style.borderColor = colors[item.station % colors.length];
+    frameStrip.appendChild(im);
+    frameStrip.scrollLeft = frameStrip.scrollWidth;
+  }, 'image/jpeg', 0.85);
+}
+
+actionBtn.onclick = async () => {
+  if (phase === 'done') return;
+  if (captures.length < 8) {
+    if (!confirm(`Seulement ${captures.length} frames. Terminer quand même ?`)) return;
+  }
+  phase = 'done';
+  setHint('export', `✅ ${captures.length} frames capturées`,
+                    `${currentZone + 1} zone(s) · ${stepCount} pas`);
+  actionBtn.textContent = 'Préparation du ZIP…';
+  actionBtn.disabled = true;
+  await exportZip();
+  actionBtn.disabled = false;
+  actionBtn.textContent = '📤 Re-télécharger';
+};
+
+resetBtn.onclick = () => {
+  if (!confirm('Tout recommencer ?')) return;
+  captures.length = 0;
+  coverageBins.clear();
+  currentZone = 0; stepCount = 0;
+  stepsSinceLastCapture = 0; stepsSinceLastZoneAdvance = 0;
+  lastCaptureOri = null; lastCaptureTime = 0;
+  frameStrip.innerHTML = '';
+  frameCountEl.textContent = '0';
+  stepCountEl.textContent = '0';
+  zoneCountEl.textContent = '0';
+  actionBtn.classList.remove('success');
+  actionBtn.textContent = 'Terminer';
+  currentHintKey = '';
+  setHint('start', 'Marche dans ton bien', 'Filme calmement les pièces et leurs détails');
+  phase = 'capturing';
+};
+
+async function exportZip() {
+  const zip = new JSZip();
+  const poses = [];
+  for (let i = 0; i < captures.length; i++) {
+    const f = captures[i];
+    const name = `f${String(i).padStart(4, '0')}_z${f.station}.jpg`;
+    zip.file(name, f.blob);
+    poses.push({
+      frame: name, idx: f.idx, zone: f.station,
+      alpha: f.ori.alpha, beta: f.ori.beta, gamma: f.ori.gamma,
+      step_count: f.stepCount, steps_since_last: f.stepsSinceLastCapture,
+      ts: f.ts,
+    });
+  }
+  zip.file('poses.json', JSON.stringify({
+    version: 3, mode: 'natural_walk',
+    device: navigator.userAgent,
+    capturedAt: new Date().toISOString(),
+    n_frames: captures.length,
+    n_zones: currentZone + 1,
+    total_steps: stepCount,
+    tuning: { ROT_DELTA_DEG, STEP_TRIGGER, BLUR_THRESHOLD,
+              STATION_GAP_STEPS, STEP_ACCEL_THRESHOLD },
+    frames: poses,
+  }, null, 2));
+  const blob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `immo3d-v3-${Date.now()}.zip`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+document.getElementById('permBtn').onclick = startCapture;
+</script>
+</body>
+</html>
